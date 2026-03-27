@@ -1,0 +1,3 @@
+# Executar:
+
+npx tauri dev
