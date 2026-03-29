@@ -42,7 +42,7 @@
   },
   "productName": "PastePull",
   "mainBinaryName": "PastePull",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "com.tauri.dev",
   "plugins": {},
   "app": {
@@ -57,7 +57,11 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
     }
   }
 }

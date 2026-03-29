@@ -16,5 +16,8 @@ token.json
 *.pem
 key.json
 *.tmp
-*.temp
 Thumbs.db
+
+# Documentation
+*.md
+!README.md
