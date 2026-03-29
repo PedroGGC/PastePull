@@ -33,7 +33,9 @@
       "signingIdentity": null
     },
     "resources": [
-      "yt-dlp.exe"
+      "yt-dlp.exe",
+      "ffmpeg.exe",
+      "ffprobe.exe"
     ],
     "shortDescription": "",
     "linux": {

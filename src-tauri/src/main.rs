@@ -90,14 +90,21 @@ async fn start_download(
     }
 
     fn find_available_browser() -> Option<String> {
-        let firefox_path = "C:\\Users\\Lux\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles";
-        if std::path::Path::new(firefox_path).exists() {
-            return Some("firefox".to_string());
+        let appdata = std::env::var("APPDATA").unwrap_or_default();
+        let localappdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
+
+        if !appdata.is_empty() {
+            let firefox_path = format!("{}\\Mozilla\\Firefox\\Profiles", appdata);
+            if std::path::Path::new(&firefox_path).exists() {
+                return Some("firefox".to_string());
+            }
         }
 
-        let edge_path = "C:\\Users\\Lux\\AppData\\Local\\Microsoft\\Edge\\User Data";
-        if std::path::Path::new(edge_path).exists() {
-            return Some("edge".to_string());
+        if !localappdata.is_empty() {
+            let edge_path = format!("{}\\Microsoft\\Edge\\User Data", localappdata);
+            if std::path::Path::new(&edge_path).exists() {
+                return Some("edge".to_string());
+            }
         }
 
         None
@@ -108,28 +115,13 @@ async fn start_download(
     
     let use_cookies = !browser_arg.is_empty() && (browser_arg == "firefox" || browser_arg == "edge");
 
-    let mut path_var = std::env::var("PATH").unwrap_or_default();
-    path_var = format!("C:\\Users\\Lux\\.deno\\bin;C:\\Program Files\\nodejs;{}", path_var);
 
-    // Try to find ffmpeg and add it to PATH so yt-dlp can merge formats
-    let ffmpeg_candidates = [
-        "C:\\ffmpeg\\bin",
-        "C:\\Program Files\\ffmpeg\\bin",
-        "C:\\Program Files (x86)\\ffmpeg\\bin",
-        "C:\\Users\\Lux\\scoop\\shims",
-        "C:\\ProgramData\\chocolatey\\bin",
-    ];
-    for candidate in &ffmpeg_candidates {
-        if std::path::Path::new(&format!("{}\\ffmpeg.exe", candidate)).exists()
-            || std::path::Path::new(&format!("{}\\ffmpeg", candidate)).exists()
-        {
-            println!("[INFO] ffmpeg encontrado em: {}", candidate);
-            path_var = format!("{};{}", candidate, path_var);
-            break;
-        }
-    }
+
+
 
     let mut args: Vec<String> = vec![
+        "--ffmpeg-location".to_string(),
+        resource_dir.to_string_lossy().to_string(),
         "--no-playlist".to_string(),
         "--write-thumbnail".to_string(),
         "--convert-thumbnails".to_string(), "jpg".to_string(),
@@ -190,7 +182,7 @@ async fn start_download(
 
     let child = Command::new(&ytdlp_path)
         .args(&args)
-        .env("PATH", path_var)
+
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONUTF8", "1")
         .stdout(stdout_file)
@@ -838,6 +830,11 @@ fn base64_encode(data: &[u8]) -> String {
     result
 }
 
+#[tauri::command]
+fn check_files_exist(paths: Vec<String>) -> Vec<bool> {
+    paths.into_iter().map(|p| std::path::Path::new(&p).exists()).collect()
+}
+
 fn main() {
     let download_state: SharedDownloadState = Arc::new(Mutex::new(DownloadState::default()));
 
@@ -853,7 +850,8 @@ fn main() {
             get_video_metadata,
             open_folder_natively,
             find_file_by_title,
-            read_thumbnail_as_base64
+            read_thumbnail_as_base64,
+            check_files_exist
         ])
         .run(tauri::generate_context!())
         .expect("Erro ao iniciar o aplicativo Tauri");

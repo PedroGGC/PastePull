@@ -134,7 +134,18 @@ export default function App() {
   const [isDownloading, setIsDownloading] = useState(false);
   const [url, setUrl] = useState('');
   const [currentProgress, setCurrentProgress] = useState<DownloadProgress | null>(null);
-  const [downloadPath, setDownloadPath] = useState('');
+  const [downloadPath, setDownloadPath] = useState(() => {
+    try {
+      return localStorage.getItem('ud_download_path') || '';
+    } catch {
+      return '';
+    }
+  });
+
+  useEffect(() => {
+    localStorage.setItem('ud_download_path', downloadPath);
+  }, [downloadPath]);
+
   const [notification, setNotification] = useState<{type: 'success' | 'error' | 'warning', message: string} | null>(null);
   const [settings, setSettings] = useState<{ theme: 'dark' | 'light', soundEnabled: boolean, desktopNotification: boolean }>(() => {
     try {
@@ -161,6 +172,31 @@ export default function App() {
       return [];
     }
   });
+
+  useEffect(() => {
+    if (currentScreen === 'downloads' && downloadHistory.length > 0) {
+      const paths = downloadHistory.map(item => item.filepath || '');
+      invoke<boolean[]>('check_files_exist', { paths })
+        .then((existsArray) => {
+          let hasChanges = false;
+          const validItems = downloadHistory.filter((item, index) => {
+            // Keep the item if it doesn't have a specific filepath, 
+            // if the filepath suffers from Windows stdout encoding loss (), 
+            // or if it successfully passes the Rust disk check.
+            const stillValid = !item.filepath || item.filepath.includes('') || existsArray[index];
+            if (!stillValid) hasChanges = true;
+            return stillValid;
+          });
+          if (hasChanges) {
+            setDownloadHistory(validItems);
+            localStorage.setItem('ud_download_history', JSON.stringify(validItems));
+            console.log('[Sync] Removed deleted files from history.');
+          }
+        })
+        .catch(err => console.error('[Sync] Failed to verify files:', err));
+    }
+  }, [currentScreen]);
+
   const [isPaused, setIsPaused] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
   
@@ -648,7 +684,7 @@ export default function App() {
                 </button>
 
                 {isQualityDropdownOpen && availableQualities.length > 0 && (
-                  <div className="absolute top-[4.5rem] left-0 sm:left-[8.5rem] w-full sm:w-[calc(50%-4rem)] bg-[#1a1a1a] border border-white/5 rounded-xl shadow-xl z-50 overflow-hidden divide-y divide-white/5">
+                  <div className="absolute top-18 left-0 sm:left-34 w-full sm:w-[calc(50%-4rem)] bg-[#1a1a1a] border border-white/5 rounded-xl shadow-xl z-50 overflow-hidden divide-y divide-white/5">
                     {availableQualities.map(q => (
                       <button
                         key={q}
@@ -698,15 +734,15 @@ export default function App() {
                 )}
               </div>
               
-              <div className="flex-1 space-y-3">
-                <div className="flex justify-between items-end">
-                  <div className="min-w-0 pr-4">
+              <div className="flex-1 min-w-0 space-y-3">
+                <div className="flex justify-between items-end gap-4">
+                  <div className="min-w-0 flex-1">
                     <div className="text-[10px] font-bold tracking-widest text-white/50 mb-1">{t('ACTIVE DOWNLOAD', 'DOWNLOAD ATIVO')}</div>
-                    <p className="text-sm font-semibold text-white truncate max-w-[200px] sm:max-w-xs md:max-w-md lg:max-w-xl">
+                    <p className="text-sm font-semibold text-white truncate w-full">
                       {currentProgress.title === t('Loading...', 'Carregando...') ? t('Extracting info...', 'Extraindo informações...') : cleanTitle(currentProgress.title || currentProgress.filename || t('Video', 'Vídeo'))}
                     </p>
                   </div>
-                  <span className="text-xs font-bold text-yellow-400 tabular-nums">
+                  <span className="text-xs font-bold text-yellow-400 tabular-nums shrink-0 pb-0.5">
                     {currentProgress.percent > 0 || currentProgress.status !== 'preparing' ? `${Math.round(currentProgress.percent)}%` : '...'}
                   </span>
                 </div>
@@ -807,9 +843,11 @@ export default function App() {
                         onClick={async (e) => {
                           e.stopPropagation();
                           try {
-                            const folderToOpen = downloadPath || 'C:\\Users\\Lux\\Downloads';
-                            console.log("Tentando abrir pasta:", folderToOpen);
-                            await invoke('open_folder_natively', { path: folderToOpen });
+                            const folderToOpen = downloadPath || '';
+                            if (folderToOpen) {
+                              console.log("Tentando abrir pasta:", folderToOpen);
+                              await invoke('open_folder_natively', { path: folderToOpen });
+                            }
                           } catch (error) {
                             console.error('[Universal Downloader] Erro ao abrir pasta:', error);
                           }
@@ -908,7 +946,12 @@ export default function App() {
                             <span className="flex items-center gap-1.5"><Clock size={12} /> {formatRelativeTime(item.completedAt)}</span>
                             {item.sizeLabel && <span className="flex items-center gap-1.5"><HardDrive size={12} /> {item.sizeLabel}</span>}
                             {item.ext && <span className="flex items-center gap-1.5 text-white/60 font-bold tracking-widest uppercase"><span className="w-1.5 h-1.5 rounded-full bg-white/20"></span>{item.ext}</span>}
-                            <span className="flex items-center gap-1.5 truncate max-w-[200px] sm:max-w-xs" title={item.filepath}><Folder size={12} /> {item.filepath}</span>
+                            <span className="flex items-center gap-1.5 max-w-[200px] sm:max-w-xs" title={item.filepath}>
+                              <Folder size={12} className="shrink-0 text-white/30" /> 
+                              <span className="truncate text-white/40">
+                                {item.filepath ? `${item.filepath.substring(0, Math.max(item.filepath.lastIndexOf('\\'), item.filepath.lastIndexOf('/')) + 1)}${item.title}${item.ext ? '.' + item.ext.toLowerCase() : ''}` : ''}
+                              </span>
+                            </span>
                           </div>
                         </div>
 
@@ -918,9 +961,10 @@ export default function App() {
                             onClick={async (e) => {
                               e.stopPropagation();
                               try {
-                                const folderToOpen = item.filepath.substring(0, Math.max(item.filepath.lastIndexOf('\\'), item.filepath.lastIndexOf('/'))) || downloadPath || 'C:\\Users\\Lux\\Downloads';
-                                console.log("Tentando abrir pasta:", folderToOpen);
-                                await invoke('open_folder_natively', { path: folderToOpen });
+                                const folderToOpen = item.filepath.substring(0, Math.max(item.filepath.lastIndexOf('\\'), item.filepath.lastIndexOf('/'))) || downloadPath || '';
+                                if (folderToOpen) {
+                                  await invoke('open_folder_natively', { path: folderToOpen });
+                                }
                               } catch (error) {
                                 console.error('[Universal Downloader] Erro ao abrir pasta:', error);
                               }

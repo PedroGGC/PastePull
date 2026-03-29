@@ -31,10 +31,10 @@
 
 /* Text Colors */
 .light-theme .text-white { color: #18181b !important; }
-.light-theme .text-white\/90 { color: rgba(0,0,0,0.9) !important; }
-.light-theme .text-white\/80 { color: rgba(0,0,0,0.8) !important; }
-.light-theme .text-white\/70 { color: rgba(0,0,0,0.7) !important; }
-.light-theme .text-white\/60 { color: rgba(0,0,0,0.6) !important; }
+.light-theme .text-white\/90 { color: #18181b !important; }
+.light-theme .text-white\/80 { color: #27272a !important; }
+.light-theme .text-white\/70 { color: #3f3f46 !important; }
+.light-theme .text-white\/60 { color: #52525b !important; }
 .light-theme .text-white\/50 { color: #52525b !important; }
 .light-theme .text-white\/40 { color: #71717a !important; }
 .light-theme .text-white\/35 { color: #71717a !important; }
@@ -43,16 +43,16 @@
 .light-theme .text-white\/20 { color: #a1a1aa !important; }
 
 /* Borders */
-.light-theme .border-white\/5 { border-color: rgba(0,0,0,0.50) !important; }
-.light-theme .border-white\/10 { border-color: rgba(0,0,0,0.50) !important; }
-.light-theme .border-white\/20 { border-color: rgba(0,0,0,0.50) !important; }
+.light-theme .border-white\/5 { border-color: #e4e4e7 !important; }
+.light-theme .border-white\/10 { border-color: #d4d4d8 !important; }
+.light-theme .border-white\/20 { border-color: #a1a1aa !important; }
 
 /* Overlays (bg-white/...) */
-.light-theme .bg-white\/5 { background-color: rgba(0,0,0,0.10) !important; }
-.light-theme .bg-white\/10 { background-color: rgba(0,0,0,0.10) !important; }
-.light-theme .bg-white\/20 { background-color: rgba(0,0,0,0.10) !important; }
-.light-theme .hover\:bg-white\/5:hover { background-color: rgba(0,0,0,0.10) !important; }
-.light-theme .hover\:bg-white\/10:hover { background-color: rgba(0,0,0,0.10) !important; }
+.light-theme .bg-white\/5 { background-color: #f4f4f5 !important; } /* Subtle inset */
+.light-theme .bg-white\/10 { background-color: #e4e4e7 !important; }
+.light-theme .bg-white\/20 { background-color: #d4d4d8 !important; }
+.light-theme .hover\:bg-white\/5:hover { background-color: #e4e4e7 !important; }
+.light-theme .hover\:bg-white\/10:hover { background-color: #d4d4d8 !important; }
 
 /* Special text hover */
 .light-theme .hover\:text-white:hover { color: #000 !important; }

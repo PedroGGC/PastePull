@@ -24,7 +24,7 @@ PastePull is a high-performance, universal video and audio downloader built with
 
 PastePull is now distributed as a standalone executable (`.exe`). It bundles the core `yt-dlp` engine safely inside its secure resource scope using Tauri's `AppHandle.path().resource_dir()`, maintaining strict portability. Setup paths have been removed completely for production!
 
-_Note: For the engine to work correctly and multiplex Video/Audio natively, make sure `ffmpeg.exe` is available on your Windows `PATH`._
+Dev Note: For the engine to work correctly and multiplex 1080p+ Video/Audio natively during development, make sure ffmpeg.exe is available on your Windows PATH.
 
 ## Architecture Notes
 

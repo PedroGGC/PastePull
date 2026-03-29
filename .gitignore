@@ -25,6 +25,8 @@ Thumbs.db
 # Build binaries and engine
 *yt-dlp.exe
 *yt-dlp
+*ffmpeg.exe
+*ffprobe.exe
 
 #imgs
 *Logo-Bg.png
