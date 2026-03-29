@@ -32,7 +32,9 @@
       "providerShortName": null,
       "signingIdentity": null
     },
-    "resources": [],
+    "resources": [
+      "yt-dlp.exe"
+    ],
     "shortDescription": "",
     "linux": {
       "deb": {
@@ -42,8 +44,8 @@
   },
   "productName": "PastePull",
   "mainBinaryName": "PastePull",
-  "version": "0.1.1",
-  "identifier": "com.tauri.dev",
+  "version": "1.0.0",
+  "identifier": "com.lux.universaldownloader",
   "plugins": {},
   "app": {
     "windows": [

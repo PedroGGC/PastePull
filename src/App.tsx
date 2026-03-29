@@ -36,14 +36,16 @@ interface DownloadProgress {
   thumbnailBase64?: string;
 }
 
-interface DownloadHistoryItem {
+export interface DownloadHistoryItem {
   id: string;
   title: string;
+  filename: string;
   filepath: string;
-  type: 'video' | 'audio' | 'other';
+  type: 'video' | 'audio' | 'image' | 'other';
+  ext?: string;
   completedAt: number;
   sizeLabel: string;
-  thumbnailDataUrl: string | null;
+  thumbnailDataUrl?: string; // stored base64 image data
 }
 
 function inferFileType(filename: string): 'video' | 'audio' | 'other' {
@@ -55,69 +57,102 @@ function inferFileType(filename: string): 'video' | 'audio' | 'other' {
   return 'other';
 }
 
+const isEnglish = navigator.language.toLowerCase().startsWith('en');
+function t(en: string, pt: string) {
+  return isEnglish ? en : pt;
+}
+
 function formatRelativeTime(timestamp: number): string {
   const diff = Date.now() - timestamp;
   const minutes = Math.floor(diff / 60000);
   const hours = Math.floor(diff / 3600000);
   const days = Math.floor(diff / 86400000);
+
+  if (isEnglish) {
+    if (minutes < 1) return 'Just now';
+    if (minutes < 60) return `${minutes} min ago`;
+    if (hours < 24) return `${hours}h ago`;
+    if (days === 1) return 'Yesterday';
+    return `${days} days ago`;
+  }
+
   if (minutes < 1) return 'Agora mesmo';
   if (minutes < 60) return `${minutes} min atrás`;
   if (hours < 24) return `${hours}h atrás`;
   if (days === 1) return 'Ontem';
   return `${days} dias atrás`;
 }
+
+function formatYtDlpSize(sizeStr: string): string {
+  if (!sizeStr) return '';
+  const clean = sizeStr.replace('~', '').trim();
+  const match = clean.match(/^([\d.]+)\s*([a-zA-Z]+)?/);
+  if (!match) return sizeStr;
+  
+  const val = parseFloat(match[1]);
+  const unit = (match[2] || '').toUpperCase();
+  
+  let mb = val;
+  if (unit.includes('K')) mb = val / 1024;
+  else if (unit.includes('G')) mb = val * 1024;
+  else if (unit.includes('T')) mb = val * 1024 * 1024;
+  else if (unit === 'B' || unit === 'BYTES') mb = val / 1048576;
+  
+  if (mb >= 1000) {
+    return `${(mb / 1024).toFixed(2).replace(/\.00$/, '')} GB`;
+  } else if (mb >= 0.1) {
+    return `${mb.toFixed(2).replace(/\.00$/, '')} MB`;
+  } else {
+    if (mb === 0) return sizeStr;
+    return `${(mb * 1024).toFixed(0)} KB`;
+  }
+}
 /** 
  * Cleans up yt-dlp filenames by stripping format identifiers, mangled URLs
  * and leftover ID hashes. Keeps the meaningful title + original extension.
- * Examples:
- *   "Out of Context Mex - httpst.conAElyqLBcY.fhls-audio-128000-Audio.mp4" → "Out of Context Mex.mp4"
- *   "Big Buck Bunny [abc123].mp4" → "Big Buck Bunny.mp4"
+ * Example:
+ *   "Big Buck Bunny [abc123].mp4" → "Big Buck Bunny"
  */
 function cleanTitle(filename: string): string {
-  // Preserve extension for display (e.g. .mp4)
-  const extMatch = filename.match(/\.([a-z0-9]{2,5})$/i);
-  const ext = extMatch ? `.${extMatch[1]}` : '';
+  let cleanStr = filename.replace(/\.[a-zA-Z0-9]{2,5}$/i, '');
+  cleanStr = cleanStr.replace(/[.\s-]+(?:fhls|dash|hls|avc|aac|opus|av1|vp9|f\d{3})[-.]?[\w.-]*$/i, '');
+  cleanStr = cleanStr.replace(/\s+-\s+https?:\/\/[^\s]+|https?:\/\/[^\s]+/i, '');
+  cleanStr = cleanStr.replace(/\s+-\s+\S*[a-z]{2,}\.[a-z]{2,}\S*/i, '');
+  cleanStr = cleanStr.replace(/\s+\[[a-zA-Z0-9_-]{6,}\]$/, '');
+  cleanStr = cleanStr.replace(/\s+-\s+[a-zA-Z0-9_-]{8,}$/, '');
 
-  // Remove extension to work on stem
-  let t = filename.replace(/\.[a-z0-9]{2,5}$/i, '');
-
-  // Remove yt-dlp format markers like ".fhls-audio-128000-Audio", "-f137"
-  t = t.replace(/[.\s-]+(?:fhls|dash|hls|avc|aac|opus|av1|vp9|f\d{3})[-.]?[\w.-]*$/i, '');
-
-  // Remove actual URLs like " - https://t.co/nAElyqLBcY" or " - https://twitter.com/..."
-  t = t.replace(/\s+-\s+https?:\/\/[^\s]+|https?:\/\/[^\s]+/i, '');
-
-  // Remove mangled URLs like " - httpst.conAElyqLBcY"
-  t = t.replace(/\s+-\s+\S*[a-z]{2,}\.[a-z]{2,}\S*/i, '');
-
-  // Remove trailing YouTube/general video IDs like " [dQw4w9WgXcQ]"
-  t = t.replace(/\s+\[[a-zA-Z0-9_-]{6,}\]$/, '');
-
-  // Remove trailing bare alphanumeric IDs after a dash " - dQw4w9WgXcQ"
-  t = t.replace(/\s+-\s+[a-zA-Z0-9_-]{8,}$/, '');
-
-  const result = t.trim();
-  return result ? `${result}${ext}` : filename;
+  const result = cleanStr.trim();
+  return result.length > 0 ? result : t('Unknown Title', 'Título Desconhecido');
 }
 
 
 
 export default function App() {
-  const [currentScreen, setCurrentScreen] = useState('search');
+  const [currentScreen, setCurrentScreen] = useState<'search' | 'downloads' | 'settings'>('search');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sortOrder, setSortOrder] = useState<'newest' | 'oldest'>('newest');
   const [isDownloading, setIsDownloading] = useState(false);
   const [url, setUrl] = useState('');
   const [currentProgress, setCurrentProgress] = useState<DownloadProgress | null>(null);
   const [downloadPath, setDownloadPath] = useState('');
   const [notification, setNotification] = useState<{type: 'success' | 'error' | 'warning', message: string} | null>(null);
+  const [settings, setSettings] = useState<{ theme: 'dark' | 'light', soundEnabled: boolean, desktopNotification: boolean }>(() => {
+    try {
+      const saved = localStorage.getItem('ud_settings');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return { theme: 'dark', soundEnabled: false, desktopNotification: false };
+  });
+
   const [downloadHistory, setDownloadHistory] = useState<DownloadHistoryItem[]>(() => {
     try {
       const saved = localStorage.getItem('ud_download_history');
       if (!saved) return [];
       const parsed: DownloadHistoryItem[] = JSON.parse(saved);
-      // Filter out old items that stored a file path instead of a base64 data URL
+      // Filter out old items that stored a local file path instead of a base64 data URL or HTTP link
       const clean = parsed.map(item => ({
         ...item,
-        thumbnailDataUrl: item.thumbnailDataUrl?.startsWith('data:') ? item.thumbnailDataUrl : null,
+        thumbnailDataUrl: (item.thumbnailDataUrl?.startsWith('data:') || item.thumbnailDataUrl?.startsWith('http')) ? item.thumbnailDataUrl : undefined,
       }));
       // Persist the cleaned version back
       localStorage.setItem('ud_download_history', JSON.stringify(clean));
@@ -126,11 +161,116 @@ export default function App() {
       return [];
     }
   });
-
   const [isPaused, setIsPaused] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
-  // Ref to metadata title — avoids stale closure in the download-progress event listener
+  
+  const [availableQualities, setAvailableQualities] = useState<string[]>([]);
+  const [selectedQuality, setSelectedQuality] = useState<string>('');
+  const [isQualityDropdownOpen, setIsQualityDropdownOpen] = useState(false);
+  
+  const [videoQualities, setVideoQualities] = useState<string[]>([]);
+  const [selectedFormat, setSelectedFormat] = useState<'video' | 'audio'>('video');
+  const [mediaCapabilities, setMediaCapabilities] = useState({ video: true, audio: true });
+  
+  const [analyzedMedia, setAnalyzedMedia] = useState<{ qualityLabel: string, type: 'video' | 'audio' } | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+
+  // Automatically update quality dropdown options when the format changes
+  useEffect(() => {
+    if (selectedFormat === 'audio') {
+      setAvailableQualities(['AUDIO ONLY']);
+      setSelectedQuality('AUDIO ONLY');
+    } else {
+      setAvailableQualities(videoQualities.length > 0 ? videoQualities : ['BEST QUALITY']);
+      setSelectedQuality(videoQualities.length > 0 ? videoQualities[0] : 'BEST QUALITY');
+    }
+  }, [selectedFormat, videoQualities]);
+
+  // Ref to metadata title and thumbnail — avoids stale closure in the download-progress event listener
   const metadataTitleRef = useRef<string>('');
+  const metadataThumbnailRef = useRef<string>('');
+  
+  const settingsRef = useRef(settings);
+  useEffect(() => {
+    settingsRef.current = settings;
+    localStorage.setItem('ud_settings', JSON.stringify(settings));
+  }, [settings]);
+
+  useEffect(() => {
+    if (!url.startsWith('http')) {
+      setAnalyzedMedia(null);
+      setIsAnalyzing(false);
+      return;
+    }
+    const timeout = setTimeout(async () => {
+      setIsAnalyzing(true);
+      setMediaCapabilities({ video: true, audio: true }); // temporary while loading
+      
+      try {
+        const metadataJson = await invoke<string>('get_video_metadata', { url });
+        const meta = JSON.parse(metadataJson);
+        
+        metadataTitleRef.current = meta.title || '';
+        metadataThumbnailRef.current = meta.thumbnail || '';
+        
+        const hSet = new Set<number>();
+        if (meta.formats) {
+          for (const f of meta.formats) {
+            if (f.vcodec !== 'none' && f.height && f.height >= 360) hSet.add(f.height);
+          }
+        }
+        const heights = Array.from(hSet).sort((a,b) => b-a);
+        const vOptions: string[] = [];
+        heights.forEach(h => vOptions.push(`${h}P VIDEO`));
+        if (vOptions.length === 0 && meta.vcodec === 'none') {
+           // É apenas áudio naturalmente
+        } else if (vOptions.length === 0) {
+           vOptions.push('BEST QUALITY');
+        }
+        
+        setVideoQualities(vOptions);
+        
+        let type: 'video' | 'audio' = vOptions.length === 0 ? 'audio' : 'video';
+        
+        setAnalyzedMedia({ qualityLabel: vOptions.length > 0 ? vOptions[0] : 'AUDIO ONLY', type });
+        setMediaCapabilities({ video: vOptions.length > 0, audio: true }); 
+        
+        // Se a url for focada em audio puramente, setar como audio automatically
+        if (vOptions.length === 0) {
+            setSelectedFormat('audio');
+        }
+      } catch (err) {
+        console.error('Análise do link falhou:', err);
+        setAnalyzedMedia(null);
+        setMediaCapabilities({ video: true, audio: true }); // Fallback para deixar tentar
+        setVideoQualities(['BEST QUALITY']);
+      } finally {
+        setIsAnalyzing(false);
+      }
+    }, 1000); // 1s debounce
+
+    return () => clearTimeout(timeout);
+  }, [url]);
+
+  const playNotificationSound = () => {
+    if (settingsRef.current.soundEnabled) {
+      try {
+        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(880, ctx.currentTime); // A5 note
+        gain.gain.setValueAtTime(0.1, ctx.currentTime);
+        osc.start();
+        gain.gain.exponentialRampToValueAtTime(0.00001, ctx.currentTime + 0.5);
+        osc.stop(ctx.currentTime + 0.5);
+      } catch (err) {
+        console.error("Audio playback failed", err);
+      }
+    }
+  };
 
   const speedMatch = currentProgress?.speed && currentProgress.speed !== '-' ? currentProgress.speed.match(/^([\d.]+)(.*)$/) : null;
   const speedValue = speedMatch ? parseFloat(speedMatch[1]).toFixed(1) : '0.0';
@@ -160,17 +300,21 @@ export default function App() {
         };
         resolveThumbnail().then((dataUrl) => {
           setTimeout(() => {
+            playNotificationSound();
+
             const newItem: DownloadHistoryItem = {
               id: Date.now().toString(),
-              title: cleanTitle(metadataTitleRef.current || p.filename || 'video'),
+              title: cleanTitle(metadataTitleRef.current || p.title || p.filename),
+              filename: p.filename,
               filepath: p.output_path || '',
               type: inferFileType(p.filename),
+              ext: (p.filename.split('.').pop() || '').toUpperCase(),
               completedAt: Date.now(),
-              sizeLabel: p.total_size || '',
-              thumbnailDataUrl: dataUrl,
+              sizeLabel: formatYtDlpSize(p.total_size || ''),
+              thumbnailDataUrl: dataUrl || metadataThumbnailRef.current || undefined,
             };
             setDownloadHistory((prev) => {
-              const updated = [newItem, ...prev].slice(0, 5);
+              const updated = [newItem, ...prev].slice(0, 100); // 100 instead of 5
               localStorage.setItem('ud_download_history', JSON.stringify(updated));
               return updated;
             });
@@ -182,7 +326,8 @@ export default function App() {
         setCurrentProgress(null);
       } else if (p.status === 'skipped') {
         setIsDownloading(false);
-        setNotification({type: 'warning', message: 'Este vídeo já foi baixado!'});
+        playNotificationSound();
+        setNotification({type: 'warning', message: t('This media has already been downloaded!', 'Este vídeo já foi baixado!')});
         setTimeout(() => setNotification(null), 10000);
         setTimeout(() => setCurrentProgress(null), 1500);
       } else if (p.status === 'downloading' || p.status === 'paused' || p.status === 'preparing') {
@@ -192,8 +337,8 @@ export default function App() {
           thumbnailBase64: prev?.thumbnailBase64,
           thumbnail: prev?.thumbnail || p.thumbnail,
           // Preserve clean title from metadata (correct encoding). Fallback to prev state to avoid flicker.
-          filename: metadataTitleRef.current || prev?.filename || p.filename || 'Vídeo',
-          title: metadataTitleRef.current || prev?.title || p.title || 'Vídeo',
+          filename: metadataTitleRef.current || prev?.filename || p.filename || t('Video', 'Vídeo'),
+          title: metadataTitleRef.current || prev?.title || p.title || t('Video', 'Vídeo'),
         }));
       }
     });
@@ -226,39 +371,32 @@ export default function App() {
 
   const handleDownloadClick = async () => {
     if (!url) return;
-    setCurrentProgress({
-      percent: 0,
-      speed: '-',
-      eta: '-',
-      status: 'preparing',
-      filename: 'Extraindo informações...',
-      output_path: '',
-      total_size: '',
-      thumbnail_path: '',
-      title: 'Carregando...',
-      thumbnail: ''
-    });
+      setCurrentProgress({
+        percent: 0,
+        speed: '-',
+        eta: '-',
+        status: 'preparing',
+        filename: t('Extracting info...', 'Extraindo informações...'),
+        output_path: '',
+        total_size: '',
+        thumbnail_path: '',
+        title: t('Loading...', 'Carregando...'),
+        thumbnail: ''
+      });
     setIsPaused(false);
     setIsDownloading(true);
 
-    // Yield to the event loop so React renders the 'preparing' state
-    // before the blocking metadata fetch starts
-    await new Promise(resolve => setTimeout(resolve, 30));
-
     try {
-      const metadataJson = await invoke<string>('get_video_metadata', { url });
-      const metadata = JSON.parse(metadataJson);
-
-      // Pre-download duplicate check using fuzzy title matching on the output dir
       const effectiveDir = downloadPath || '';
       if (effectiveDir) {
         const alreadyExists = await invoke<boolean>('find_file_by_title', {
           dir: effectiveDir,
-          title: metadata.title || '',
+          title: metadataTitleRef.current || '',
         });
-        console.log('[DupCheck] dir:', effectiveDir, '| title:', metadata.title, '| alreadyExists:', alreadyExists);
+        console.log('[DupCheck] dir:', effectiveDir, '| title:', metadataTitleRef.current, '| alreadyExists:', alreadyExists);
         if (alreadyExists) {
-          setNotification({ type: 'warning', message: 'Este vídeo já foi baixado!' });
+          playNotificationSound();
+          setNotification({ type: 'warning', message: t('This media has already been downloaded!', 'Este vídeo já foi baixado!') });
           setTimeout(() => setNotification(null), 10000);
           setCurrentProgress(null);
           setIsDownloading(false);
@@ -266,31 +404,51 @@ export default function App() {
         }
       }
       
+      // Use existing metadata since we pre-fetched it
+      const titleToUse = analyzedMedia?.qualityLabel.startsWith('AUDIO') 
+        ? (metadataTitleRef.current || t('Audio', 'Áudio')) 
+        : (metadataTitleRef.current || t('Video', 'Vídeo'));
+        
       setCurrentProgress(prev => prev ? {
         ...prev,
-        title: metadata.title || 'Vídeo',
-        thumbnail: metadata.thumbnail || '',
-        filename: metadata.title || 'Vídeo'
+        title: titleToUse,
+        filename: titleToUse,
+        thumbnail: metadataThumbnailRef.current || ''
       } : null);
-      metadataTitleRef.current = metadata.title || ''; // keep in ref for event listener
+      // metadataTitleRef already set during analysis or event. 
 
-      await invoke('start_download', { url, outputDir: downloadPath });
+      await invoke('start_download', { url, outputDir: downloadPath, quality: selectedQuality || null, formatType: selectedFormat });
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
       if (errMsg.includes('ARQUIVO_JA_EXISTE')) {
-        setNotification({type: 'warning', message: 'Este vídeo já foi baixado!'});
+        playNotificationSound();
+        setNotification({type: 'warning', message: t('This media has already been downloaded!', 'Este vídeo já foi baixado!')});
         setTimeout(() => setNotification(null), 10000);
       } else if (errMsg.includes('oauth_required') || errMsg.toLowerCase().includes('login')) {
-        setNotification({type: 'warning', message: 'Login OAuth necessário! Verifique o terminal.'});
+        setNotification({type: 'warning', message: t('OAuth login required! Check the terminal.', 'Login OAuth necessário! Verifique o terminal.')});
         setTimeout(() => setNotification(null), 10000);
       } else if (errMsg.toLowerCase().includes('http error 403') || errMsg.toLowerCase().includes('sign in to confirm') || errMsg.toLowerCase().includes('bot') || errMsg.toLowerCase().includes('blocked')) {
-        setNotification({type: 'error', message: 'Houve um problema na requisição. Tente novamente mais tarde!'});
+        setNotification({type: 'error', message: t('There was a problem with the request. Try again later!', 'Houve um problema na requisição. Tente novamente mais tarde!')});
         setTimeout(() => setNotification(null), 10000);
         console.error('[App] yt-dlp foi provávelmente bloqueado (Rate Limit / Bot). ERRO REAL:', errMsg);
       } else {
-        setNotification({type: 'error', message: 'Erro crítico no download. Verifique o link e tente novamente.'});
+        setNotification({type: 'error', message: t('Critical error downloading. Check the link and try again.', 'Erro crítico no download. Verifique o link e tente novamente.')});
         setTimeout(() => setNotification(null), 10000);
         console.error('Erro no download:', error);
+      }
+      
+      // Disparar Notificação Desktop se configurado
+      if (settingsRef.current.desktopNotification && !errMsg.includes('ARQUIVO_JA_EXISTE')) {
+        try {
+          import('@tauri-apps/plugin-notification').then(({ sendNotification }) => {
+            sendNotification({
+              title: t('Universal Downloader - Error', 'Universal Downloader - Erro'),
+              body: t(`Failed to download: ${metadataTitleRef.current || url}`, `Falha ao tentar baixar: ${metadataTitleRef.current || url}`),
+            });
+          }).catch(console.error);
+        } catch (err) {
+          console.error('Falha ao enviar notificação desktop', err);
+        }
       }
       
       // Sempre limpar o painel "Extraindo informações..." se a extração final abortou
@@ -300,7 +458,7 @@ export default function App() {
   };
   
   return (
-    <div className="flex h-screen bg-[#0a0a0a] text-white font-sans selection:bg-white/20">
+    <div className={`flex h-screen bg-[#0a0a0a] text-white font-sans selection:bg-white/20 transition-all ${settings.theme === 'light' ? 'light-theme' : ''}`}>
       {/* Sidebar */}
       <aside className="w-64 bg-[#111111] border-r border-white/5 flex flex-col justify-between shrink-0">
         <div>
@@ -343,7 +501,7 @@ export default function App() {
           <div className="bg-[#171717] rounded-xl p-4 border border-white/5">
             <div className="flex items-center gap-2 text-white/50 mb-2">
               <Gauge className="w-4 h-4" />
-              <span className="text-[10px] font-bold tracking-widest">GLOBAL SPEED</span>
+              <span className="text-[10px] font-bold tracking-widest">{t('GLOBAL SPEED', 'VELOCIDADE GLOBAL')}</span>
             </div>
             <div className="flex items-baseline gap-1">
               <span className="text-2xl font-bold">{speedValue}</span>
@@ -401,17 +559,17 @@ export default function App() {
                   <div className="w-10 h-10 rounded-full bg-red-400/10 flex items-center justify-center">
                     <X size={20} />
                   </div>
-                  <h3 className="text-lg font-bold text-white">Cancelar Download?</h3>
+                  <h3 className="text-lg font-bold text-white">{t('Cancel Download?', 'Cancelar Download?')}</h3>
                 </div>
                 <p className="text-white/60 text-sm mb-6">
-                  Tem certeza que deseja cancelar o download do vídeo? O progresso atual será perdido.
+                  {t('Are you sure you want to cancel the download? Current progress will be lost.', 'Tem certeza que deseja cancelar o download? O progresso atual será perdido.')}
                 </p>
                 <div className="flex gap-3 justify-end">
                   <button 
                     onClick={() => setShowCancelModal(false)}
                     className="px-4 py-2 rounded-lg text-sm font-semibold text-white/70 hover:text-white hover:bg-white/5 transition-colors"
                   >
-                    Voltar
+                    {t('Go Back', 'Voltar')}
                   </button>
                   <button 
                     onClick={async () => {
@@ -428,7 +586,7 @@ export default function App() {
                     }}
                     className="px-4 py-2 rounded-lg text-sm font-semibold bg-red-500 hover:bg-red-600 text-white transition-colors"
                   >
-                    Sim, Cancelar
+                    {t('Yes, Cancel', 'Sim, Cancelar')}
                   </button>
                 </div>
               </motion.div>
@@ -445,25 +603,70 @@ export default function App() {
             {/* Hero Section */}
             <div className="text-center space-y-4">
               <h2 className="text-4xl font-bold tracking-tight">PastePull</h2>
-              <p className="text-white/50 text-lg">Enter a URL and download it :).</p>
+              <p className="text-white/50 text-lg">{t('Enter a URL and download it :)', 'Insira um URL e baixe-o :)')}</p>
             </div>
 
             {/* Input Section */}
             <div className="space-y-4">
               <input 
                 type="text" 
-                placeholder="Paste your link here (YouTube, TikTok, Reddit...)" 
+                placeholder={t('Paste your link here (YouTube, TikTok, Reddit...)', 'Cole o seu link aqui (YouTube, TikTok, Reddit...)')}
                 value={url}
-                onChange={(e) => setUrl(e.target.value)}
+                onChange={(e) => {
+                  setUrl(e.target.value);
+                  setAnalyzedMedia(null);
+                  setAvailableQualities([]);
+                  metadataTitleRef.current = '';
+                  metadataThumbnailRef.current = '';
+                }}
                 className="w-full bg-[#1a1a1a] border border-white/5 rounded-xl px-6 py-5 text-white placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-white/20 transition-all"
               />
-              <div className="flex gap-4">
-                <button className="flex-1 flex items-center justify-between bg-[#1a1a1a] border border-white/5 rounded-xl px-6 py-4 hover:bg-[#222] transition-colors">
-                  <span className="text-xs font-bold tracking-wider">1080P HIGH DEFINITION</span>
-                  <ChevronDown className="w-4 h-4 text-white/50" />
+              <div className="flex flex-col sm:flex-row gap-4 relative">
+                {/* Mode Selector */}
+                <div className="w-full sm:w-32 shrink-0 relative">
+                  <select
+                    value={selectedFormat}
+                    onChange={(e) => setSelectedFormat(e.target.value as any)}
+                    disabled={isAnalyzing || (isDownloading && currentProgress?.status === 'downloading')}
+                    className="w-full appearance-none bg-[#1a1a1a] border border-white/5 rounded-xl pl-4 pr-10 py-4 text-xs font-bold tracking-wider text-white focus:outline-none cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <option value="video" disabled={!mediaCapabilities.video}>{t('VIDEO', 'VÍDEO')}</option>
+                    <option value="audio" disabled={!mediaCapabilities.audio}>{t('AUDIO', 'ÁUDIO')}</option>
+                  </select>
+                  <ChevronDown className="w-4 h-4 text-white/30 absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+                </div>
+
+                <button 
+                  onClick={() => setIsQualityDropdownOpen(!isQualityDropdownOpen)}
+                  disabled={isAnalyzing || availableQualities.length === 0}
+                  className="flex-1 flex items-center justify-between bg-[#1a1a1a] border border-white/5 rounded-xl px-6 py-4 hover:bg-[#222] transition-colors relative"
+                >
+                  <span className={`text-xs font-bold tracking-wider ${isAnalyzing ? 'animate-pulse text-white/50' : 'text-white'}`}>
+                    {isAnalyzing ? t('ANALYZING MEDIA...', 'ANALISANDO MÍDIA...') : (selectedQuality || t('AWAITING URL...', 'AGUARDANDO LINK...'))}
+                  </span>
+                  <ChevronDown className="w-4 h-4 text-white/30" />
                 </button>
-                <button onClick={handleDownloadClick} className="flex-1 bg-[#2a2a2a] hover:bg-[#333] text-white rounded-xl px-6 py-4 font-bold tracking-wider text-sm transition-colors">
-                  DOWNLOAD
+
+                {isQualityDropdownOpen && availableQualities.length > 0 && (
+                  <div className="absolute top-[4.5rem] left-0 sm:left-[8.5rem] w-full sm:w-[calc(50%-4rem)] bg-[#1a1a1a] border border-white/5 rounded-xl shadow-xl z-50 overflow-hidden divide-y divide-white/5">
+                    {availableQualities.map(q => (
+                      <button
+                        key={q}
+                        onClick={() => { setSelectedQuality(q); setIsQualityDropdownOpen(false); }}
+                        className={`w-full text-left px-6 py-4 text-xs font-bold tracking-wider hover:bg-[#222] transition-colors ${selectedQuality === q ? 'text-yellow-400 bg-white/5' : 'text-white'}`}
+                      >
+                        {q}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <button 
+                  onClick={handleDownloadClick} 
+                  disabled={!url || !analyzedMedia || isAnalyzing || (isDownloading && currentProgress?.status === 'downloading')}
+                  className="flex-1 bg-[#2a2a2a] hover:bg-[#333] disabled:opacity-50 text-white rounded-xl px-6 py-4 font-bold tracking-wider text-sm transition-colors"
+                >
+                  {isAnalyzing ? t('LOADING...', 'CARREGANDO...') : t('DOWNLOAD', 'DOWNLOAD')}
                 </button>
               </div>
             </div>
@@ -497,10 +700,10 @@ export default function App() {
               
               <div className="flex-1 space-y-3">
                 <div className="flex justify-between items-end">
-                  <div>
-                    <div className="text-[10px] font-bold tracking-widest text-white/50 mb-1">ACTIVE DOWNLOAD</div>
-                    <p className="text-sm font-semibold text-white truncate">
-                      {currentProgress.title === 'Carregando...' ? 'Extraindo informações...' : cleanTitle(currentProgress.title || currentProgress.filename || 'Vídeo')}
+                  <div className="min-w-0 pr-4">
+                    <div className="text-[10px] font-bold tracking-widest text-white/50 mb-1">{t('ACTIVE DOWNLOAD', 'DOWNLOAD ATIVO')}</div>
+                    <p className="text-sm font-semibold text-white truncate max-w-[200px] sm:max-w-xs md:max-w-md lg:max-w-xl">
+                      {currentProgress.title === t('Loading...', 'Carregando...') ? t('Extracting info...', 'Extraindo informações...') : cleanTitle(currentProgress.title || currentProgress.filename || t('Video', 'Vídeo'))}
                     </p>
                   </div>
                   <span className="text-xs font-bold text-yellow-400 tabular-nums">
@@ -548,13 +751,13 @@ export default function App() {
             <div className="pt-8">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-xs font-semibold uppercase tracking-widest text-white/40">
-                  Recent Activity
+                  {t('Recent Activity', 'Atividade Recente')}
                 </h2>
                 <button
                   onClick={() => setCurrentScreen('downloads')}
                   className="text-xs font-semibold uppercase tracking-widest text-yellow-400/70 hover:text-yellow-400 transition-colors duration-200"
                 >
-                  View History
+                  {t('View History', 'Ver Histórico')}
                 </button>
               </div>
 
@@ -563,7 +766,7 @@ export default function App() {
                   <div className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center">
                     <Clock size={18} className="text-white/20" />
                   </div>
-                  <p className="text-sm text-white/25">Nenhum arquivo baixado recentemente</p>
+                  <p className="text-sm text-white/25">{t('No recent activity', 'Nenhum arquivo baixado recentemente')}</p>
                 </div>
               ) : (
                 <ul className="space-y-1">
@@ -576,26 +779,25 @@ export default function App() {
                         className="shrink-0 w-12 h-12 rounded-lg overflow-hidden bg-white/5 border border-white/10 flex items-center justify-center cursor-pointer"
                         onClick={() => console.log('Abrir arquivo:', item.filepath)}
                       >
-                        {item.thumbnailDataUrl?.startsWith('data:') ? (
+                        {item.thumbnailDataUrl?.startsWith('data:') || item.thumbnailDataUrl?.startsWith('http') ? (
                           <img
                             src={item.thumbnailDataUrl}
                             alt={item.title}
                             className="w-full h-full object-cover"
                             onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
                           />
-                        ) : item.type === 'video' ? (
-                          <Film size={20} className="text-yellow-400/70" />
-                        ) : item.type === 'audio' ? (
-                          <Music size={20} className="text-blue-400/70" />
                         ) : (
-                          <FileDown size={20} className="text-white/30" />
+                          {
+                            video: <Film size={20} className="text-yellow-400/70" />,
+                            audio: <Music size={20} className="text-blue-400/70" />
+                          }[item.type as string] || <FileDown size={20} className="text-white/30" />
                         )}
                       </div>
 
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-medium text-white/90 truncate">{item.title}</p>
                         <p className="text-xs text-white/35 mt-0.5 truncate">
-                          Concluído {formatRelativeTime(item.completedAt)}
+                          {navigator.language.toLowerCase().startsWith('en') ? 'Completed' : 'Concluído'} {formatRelativeTime(item.completedAt)}
                           {item.sizeLabel ? ` • ${item.sizeLabel}` : ''}
                         </p>
                       </div>
@@ -627,12 +829,38 @@ export default function App() {
 
             {currentScreen === 'downloads' && (
               <div className="space-y-6">
-                <div className="flex items-center justify-between border-b border-white/5 pb-6">
-                  <h2 className="text-2xl font-bold tracking-tight text-white">Downloads</h2>
+                <div className="flex flex-col gap-4 border-b border-white/5 pb-6">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-2xl font-bold tracking-tight text-white">Downloads</h2>
+                    <div className="flex items-center gap-3">
+                      {downloadHistory.length > 0 && (
+                        <button 
+                          onClick={() => setSortOrder(prev => prev === 'newest' ? 'oldest' : 'newest')}
+                          className="flex items-center gap-1.5 bg-white/5 hover:bg-white/10 text-white/70 px-3 py-1.5 rounded-lg transition-colors text-xs font-semibold uppercase tracking-widest cursor-pointer"
+                          title={t('Toggle sort order', 'Alternar ordem de exibição')}
+                        >
+                          <Clock size={14} className={`transition-transform duration-300 ${sortOrder === 'oldest' ? 'rotate-180' : ''}`} />
+                          {sortOrder === 'newest' ? t('Newest', 'Mais Novos') : t('Oldest', 'Mais Antigos')}
+                        </button>
+                      )}
+                      {downloadHistory.length > 0 && (
+                        <span className="bg-white/10 text-white/70 text-xs font-bold px-3 py-1 rounded-full">
+                          {downloadHistory.length} {downloadHistory.length === 1 ? t('file', 'arquivo') : t('files', 'arquivos')}
+                        </span>
+                      )}
+                    </div>
+                  </div>
                   {downloadHistory.length > 0 && (
-                    <span className="bg-white/10 text-white/70 text-xs font-bold px-3 py-1 rounded-full">
-                      {downloadHistory.length} {downloadHistory.length === 1 ? 'file' : 'files'}
-                    </span>
+                    <div className="relative">
+                      <Search className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-white/30" />
+                      <input
+                        type="text"
+                        placeholder={t('Search downloads...', 'Procurar downloads...')}
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="w-full bg-[#1a1a1a] border border-white/5 rounded-xl pl-12 pr-6 py-3 text-white placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-white/20 transition-all"
+                      />
+                    </div>
                   )}
                 </div>
                 
@@ -641,29 +869,34 @@ export default function App() {
                     <div className="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center">
                       <Download size={24} className="text-white/20" />
                     </div>
-                    <p className="text-white/40">Nenhum download concluído ainda. Vamos a isso!</p>
+                    <p className="text-white/40">{t('No downloads completed yet. Let\'s go!', 'Nenhum download concluído ainda. Vamos a isso!')}</p>
                   </div>
                 ) : (
                   <div className="grid gap-3">
-                    {downloadHistory.map((item) => (
+                    {(() => {
+                      let displayedList = downloadHistory.filter(item => item.title.toLowerCase().includes(searchQuery.toLowerCase()));
+                      if (sortOrder === 'oldest') {
+                        displayedList = [...displayedList].reverse();
+                      }
+                      
+                      return displayedList.map((item) => (
                       <div
                         key={item.id}
                         className="group flex flex-col sm:flex-row items-center gap-4 p-4 bg-[#1a1a1a] border border-white/5 rounded-2xl hover:bg-[#1e1e1e] transition-colors"
                       >
                         <div className="shrink-0 w-full sm:w-32 h-20 rounded-lg overflow-hidden bg-white/5 border border-white/10 flex items-center justify-center">
-                          {item.thumbnailDataUrl?.startsWith('data:') ? (
+                          {(item.thumbnailDataUrl?.startsWith('data:') || item.thumbnailDataUrl?.startsWith('http')) ? (
                             <img
                               src={item.thumbnailDataUrl}
                               alt={item.title}
                               className="w-full h-full object-cover"
                               onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
                             />
-                          ) : item.type === 'video' ? (
-                            <Film size={24} className="text-yellow-400/70" />
-                          ) : item.type === 'audio' ? (
-                            <Music size={24} className="text-blue-400/70" />
                           ) : (
-                            <FileDown size={24} className="text-white/30" />
+                            {
+                              video: <Film size={24} className="text-yellow-400/70" />,
+                              audio: <Music size={24} className="text-blue-400/70" />
+                            }[item.type as string] || <FileDown size={24} className="text-white/30" />
                           )}
                         </div>
 
@@ -674,13 +907,14 @@ export default function App() {
                           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-white/40">
                             <span className="flex items-center gap-1.5"><Clock size={12} /> {formatRelativeTime(item.completedAt)}</span>
                             {item.sizeLabel && <span className="flex items-center gap-1.5"><HardDrive size={12} /> {item.sizeLabel}</span>}
+                            {item.ext && <span className="flex items-center gap-1.5 text-white/60 font-bold tracking-widest uppercase"><span className="w-1.5 h-1.5 rounded-full bg-white/20"></span>{item.ext}</span>}
                             <span className="flex items-center gap-1.5 truncate max-w-[200px] sm:max-w-xs" title={item.filepath}><Folder size={12} /> {item.filepath}</span>
                           </div>
                         </div>
 
                         <div className="shrink-0 w-full sm:w-auto flex justify-end">
                           <button
-                            title="Abrir localização do arquivo"
+                            title={t('Open file location', 'Abrir localização do arquivo')}
                             onClick={async (e) => {
                               e.stopPropagation();
                               try {
@@ -694,18 +928,24 @@ export default function App() {
                             className="flex items-center gap-2 bg-white/5 hover:bg-white/10 px-4 py-2.5 rounded-lg transition-colors text-xs font-semibold text-white/70 hover:text-white"
                           >
                             <FolderOpen size={14} />
-                            <span>Abrir Pasta</span>
+                            <span>{t('Open Folder', 'Abrir Pasta')}</span>
                           </button>
                         </div>
                       </div>
-                    ))}
+                    ));
+                  })()}
                   </div>
                 )}
               </div>
             )}
 
             {currentScreen === 'settings' && (
-              <SettingsScreen downloadPath={downloadPath} onDownloadPathChange={setDownloadPath} />
+              <SettingsScreen 
+                downloadPath={downloadPath} 
+                onDownloadPathChange={setDownloadPath} 
+                settings={settings}
+                setSettings={setSettings}
+              />
             )}
 
           </div>

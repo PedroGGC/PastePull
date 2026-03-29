@@ -1,4 +1,4 @@
-# PastePull (Universal Downloader) 🚀
+# PastePull (Universal Downloader)
 
 PastePull is a high-performance, universal video and audio downloader built with **Tauri**, **Rust**, and **React**. It abstracts the complexity of `yt-dlp` into a beautiful, buttery-smooth user interface with real-time progress tracking, thumbnail extraction, and download history management.
 
@@ -33,4 +33,4 @@ _Note: For the engine to work correctly, make sure `yt-dlp.exe` and `ffmpeg.exe`
 
 ---
 
-_Built tightly and safely for speed and reliability._
+_Built for personal use but I decided to share it._

@@ -58,6 +58,8 @@ fn get_default_download_path() -> String {
 async fn start_download(
     url: String,
     output_dir: String,
+    quality: Option<String>,
+    format_type: Option<String>,
     app: AppHandle,
     state: tauri::State<'_, SharedDownloadState>,
 ) -> Result<(), String> {
@@ -75,14 +77,13 @@ async fn start_download(
         output_dir.clone()
     };
 
+    let format_val = format_type.unwrap_or_else(|| "video".to_string());
+
     let output_template = format!("{}/%(title)s.%(ext)s", final_path.trim_end_matches(['/', '\\']));
 
-    let current_dir = std::env::current_dir().unwrap_or_default();
-    let ytdlp_path = if current_dir.ends_with("src-tauri") {
-        current_dir.join("yt-dlp.exe")
-    } else {
-        current_dir.join("src-tauri").join("yt-dlp.exe")
-    };
+    use tauri::Manager;
+    let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
+    let ytdlp_path = resource_dir.join("yt-dlp.exe");
 
     if !ytdlp_path.exists() {
         return Err(format!("yt-dlp.exe não encontrado no caminho: {}", ytdlp_path.display()));
@@ -128,27 +129,53 @@ async fn start_download(
         }
     }
 
-    let mut args = vec![
-        "--no-playlist",
-        "--write-thumbnail",
-        "--convert-thumbnails", "jpg",
-        "--progress-template", "[download] %(progress._percent_str)s of %(progress._total_bytes_str)s at %(progress._speed_str)s ETA %(progress._eta_str)s",
-        "--newline",   // One update per line (no carriage-return animation)
-        "--no-colors", // No ANSI escape codes
-        // Prefer formats that don't require merging: mp4 video + m4a audio merged to mp4
-        // Falls back to any best format if not available
-        "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
-        "--merge-output-format", "mp4",
+    let mut args: Vec<String> = vec![
+        "--no-playlist".to_string(),
+        "--write-thumbnail".to_string(),
+        "--convert-thumbnails".to_string(), "jpg".to_string(),
+        "--progress-template".to_string(), "[download] %(progress._percent_str)s of %(progress._total_bytes_str)s at %(progress._speed_str)s ETA %(progress._eta_str)s".to_string(),
+        "--newline".to_string(),
+        "--no-colors".to_string(),
     ];
     
-    if use_cookies {
-        args.push("--cookies-from-browser");
-        args.push(&browser_arg);
+    let mut is_audio_only = false;
+    let q_str = quality.unwrap_or_else(|| "".to_string());
+    
+    match (format_val.as_str(), q_str.as_str()) {
+        ("audio", _) | (_, "AUDIO ONLY") => {
+            is_audio_only = true;
+            args.push("-f".to_string());
+            args.push("bestaudio/best".to_string());
+            args.push("--extract-audio".to_string());
+            args.push("--audio-format".to_string());
+            args.push("mp3".to_string());
+        },
+        (_, q) if q.ends_with("P VIDEO") => {
+            let height_str = q.replace("P VIDEO", "");
+            let format_filter = format!("bestvideo[height<={height_str}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={height_str}]+bestaudio/best");
+            args.push("-f".to_string());
+            args.push(format_filter);
+        },
+        _ => {
+            args.push("-f".to_string());
+            args.push("bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best".to_string());
+        }
     }
     
-    args.push("-o");
-    args.push(&output_template);
-    args.push(&url);
+    if !is_audio_only {
+        args.push("--merge-output-format".to_string());
+        args.push("mp4".to_string());
+    }
+    
+    if use_cookies {
+        args.push("--cookies-from-browser".to_string());
+        args.push(browser_arg);
+    }
+    
+    args.push("-o".to_string());
+    args.push(output_template);
+    args.push(url.clone());
+
     
 
     let tmp_dir = std::env::temp_dir();
@@ -235,6 +262,8 @@ async fn start_download(
         };
         let mut reader = BufReader::new(file);
         let mut last_logged_percent: f64 = -15.0; // log at 0% and every 15% after
+        let mut last_emit_time = std::time::Instant::now();
+        let mut last_emitted_percent = -1.0_f64;
 
         loop {
             loop {
@@ -354,7 +383,17 @@ async fn start_download(
                                     last_progress.total_size, last_progress.speed, last_progress.eta);
                                 last_logged_percent = real_percent;
                             }
-                            let _ = app_clone.emit("download-progress", last_progress.clone());
+                            
+                            // Throttle IPC emission to max 1 per 100ms or 1% change or completion
+                            let now = std::time::Instant::now();
+                            if (display_percent - last_emitted_percent).abs() >= 1.0 
+                                || now.duration_since(last_emit_time).as_millis() >= 100 
+                                || display_percent >= 99.9 
+                            {
+                                let _ = app_clone.emit("download-progress", last_progress.clone());
+                                last_emit_time = now;
+                                last_emitted_percent = display_percent;
+                            }
                         }
 
                         if line.to_lowercase().contains("has already been downloaded") {
@@ -625,13 +664,10 @@ async fn select_download_folder(app: AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn get_video_metadata(url: String) -> Result<String, String> {
-    let current_dir = std::env::current_dir().unwrap_or_default();
-    let ytdlp_path = if current_dir.ends_with("src-tauri") {
-        current_dir.join("yt-dlp.exe")
-    } else {
-        current_dir.join("src-tauri").join("yt-dlp.exe")
-    };
+async fn get_video_metadata(app: AppHandle, url: String) -> Result<String, String> {
+    use tauri::Manager;
+    let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
+    let ytdlp_path = resource_dir.join("yt-dlp.exe");
 
     // Run in a blocking thread so Tauri's async runtime isn't starved
     tokio::task::spawn_blocking(move || {
@@ -808,6 +844,7 @@ fn main() {
     tauri::Builder::default()
         .manage(download_state)
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             start_download,
             cancel_download,
