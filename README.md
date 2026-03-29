@@ -2,16 +2,16 @@
 
 PastePull is a high-performance, universal video and audio downloader built with **Tauri**, **Rust**, and **React**. It abstracts the complexity of `yt-dlp` into a beautiful, buttery-smooth user interface with real-time progress tracking, thumbnail extraction, and download history management.
 
-> ⚠️ **Development Notice:** This application is currently a Work In Progress (WIP). There are no pre-compiled `.exe` binaries available for download yet. You must run the project in a development environment to use it.
+> 🚀 **V1.0.0 Release:** The application is now ready for production bundling with fully embedded dependencies.
 
 ## Features
 
-- **Universal Support:** Download videos from YouTube, Twitter/X, Reddit, TikTok, and hundreds of other platforms supported by `yt-dlp`.
-- **Intelligent Formatting:** Automatically selects the best video and audio streams and merges them seamlessly without requiring you to use the command line.
-- **Real-Time Global Speed:** Dynamic extraction of real-time download speeds displayed directly on the sidebar.
-- **Beautiful UX:** Fluid progress bars, native OS notifications, dark-mode focused UI built with Tailwind CSS, and automatic metadata extraction.
-- **Rich Download History:** Visual history tracking with 16:9 thumbnail previews, file size formatting, and one-click "Open Folder" native integration.
-- **Resilient Engine:** Rust backend with memory-safe `stdout` parsing, bypassing common Windows pipe encoding issues.
+- **Universal Support:** Download media from YouTube, Twitter/X, Reddit, TikTok, LinkedIn, and hundreds of other platforms natively supported by `yt-dlp`.
+- **Media Type & Smart Extraction:** Automatically selects and displays the best streams for Video or Audio specifically.
+- **Dynamic Quality Filtering:** A drop-down menu that populates in real-time with available resolutions exclusively for the selected media type after metadata is scouted.
+- **I18n Natively:** The UI senses your system language and automatically adjusts timestamps and interface copy seamlessly between English and Portuguese.
+- **Real-Time Global Speed & Strict Throttling:** Breathtaking display of real-time network speeds, optimized safely under the hood through Tauri IPC debouncing to maintain zero CPU-lag.
+- **Download History:** Visual history tracking with 16:9 thumbnail previews, standardized file size tags (MB/GB), exact download extension identifiers, and one-click "Open Folder" OS-integration. The system retains exactly the latest 100 historical downloads logic.
 
 ## Technology Stack
 
@@ -22,14 +22,14 @@ PastePull is a high-performance, universal video and audio downloader built with
 
 ## Usage
 
-PastePull is distributed as a standalone executable. Simply open the app, paste your desired video or audio link into the search bar, select your quality preference, and hit Download!
+PastePull is now distributed as a standalone executable (`.exe`). It bundles the core `yt-dlp` engine safely inside its secure resource scope using Tauri's `AppHandle.path().resource_dir()`, maintaining strict portability. Setup paths have been removed completely for production!
 
-_Note: For the engine to work correctly, make sure `yt-dlp.exe` and `ffmpeg.exe` are present in your system or running folder._
+_Note: For the engine to work correctly and multiplex Video/Audio natively, make sure `ffmpeg.exe` is available on your Windows `PATH`._
 
 ## Architecture Notes
 
-- **Event Loop & Progress:** The Rust backend spawns `yt-dlp` in a child process, writing its output to temporary files to sidestep Windows CP1252/Unicode pipe crashes. The backend then polls these files, parses the progress via Regex, and emits structured events (`download-progress`) to the React frontend.
-- **State Management:** The React frontend maintains a localized history (`localStorage`) and strictly synchronizes the active download card with the 100% completion state before discarding it to the "Downloads" screen to guarantee a pleasant UX.
+- **Event Loop & Progress (Debounced):** The Rust backend spawns `yt-dlp` in a child process using `Command`, piping `stdout` to parse log fragments. To protect the React GUI from Main-Thread lockups, the structural events (`download-progress`) sent over IPC are rigorously throttled (delta >= `1%` OR `> 100ms`).
+- **State Management & Pattern Matching:** The backend replaces `if/else` checks with hard-fought Rust `match` clauses. The frontend operates with an explicit logic lock prior to full metadata resolution, preserving visual integrity and safely managing local arrays up to a `100` element queue.
 
 ---
 

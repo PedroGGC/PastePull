@@ -25,3 +25,8 @@ Thumbs.db
 # Build binaries and engine
 *yt-dlp.exe
 *yt-dlp
+
+#imgs
+*Logo-Bg.png
+*Logo.png
+
