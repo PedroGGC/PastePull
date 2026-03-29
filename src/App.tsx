@@ -146,13 +146,13 @@ export default function App() {
     localStorage.setItem('ud_download_path', downloadPath);
   }, [downloadPath]);
 
-  const [notification, setNotification] = useState<{type: 'success' | 'error' | 'warning', message: string} | null>(null);
-  const [settings, setSettings] = useState<{ theme: 'dark' | 'light', soundEnabled: boolean, desktopNotification: boolean }>(() => {
+  const [notification, setNotification] = useState<{type: 'success' | 'error' | 'warning', message: string, onClick?: () => void} | null>(null);
+  const [settings, setSettings] = useState<{ theme: 'dark' | 'light', soundEnabled: boolean, desktopNotification: boolean, maxDownloads: number }>(() => {
     try {
       const saved = localStorage.getItem('ud_settings');
       if (saved) return JSON.parse(saved);
     } catch {}
-    return { theme: 'dark', soundEnabled: false, desktopNotification: false };
+    return { theme: 'dark', soundEnabled: false, desktopNotification: false, maxDownloads: 3 };
   });
 
   const [downloadHistory, setDownloadHistory] = useState<DownloadHistoryItem[]>(() => {
@@ -407,6 +407,18 @@ export default function App() {
 
   const handleDownloadClick = async () => {
     if (!url) return;
+
+    // Limit check
+    if (isDownloading && settings.maxDownloads <= 1) {
+      setNotification({
+        type: 'warning', 
+        message: t('Maximum simultaneous downloads reached! Click to change.', 'Máximo de downloads simultâneos atingido! Clique para alterar.'),
+        onClick: () => setCurrentScreen('settings')
+      });
+      setTimeout(() => setNotification(null), 10000);
+      return;
+    }
+
       setCurrentProgress({
         percent: 0,
         speed: '-',
@@ -565,10 +577,13 @@ export default function App() {
               exit={{ opacity: 0, y: -20, scale: 0.95 }}
               transition={{ duration: 0.3, ease: "easeOut" }}
               className={`fixed top-6 right-6 px-6 py-4 rounded-xl shadow-2xl z-50 border backdrop-blur-md flex items-center gap-4 min-w-[320px] max-w-md ${
+                notification.onClick ? 'cursor-pointer hover:brightness-110' : ''
+              } ${
                 notification.type === 'warning' ? 'bg-yellow-500/10 border-yellow-500/20 text-yellow-400' : 
                 notification.type === 'error' ? 'bg-red-500/10 border-red-500/20 text-red-400' : 
                 'bg-green-500/10 border-green-500/20 text-green-400'
               }`}
+              onClick={notification.onClick}
             >
               <div className="flex-1 font-medium text-sm">{notification.message}</div>
               <button 
@@ -639,7 +654,7 @@ export default function App() {
             {/* Hero Section */}
             <div className="text-center space-y-4">
               <h2 className="text-4xl font-bold tracking-tight">PastePull</h2>
-              <p className="text-white/50 text-lg">{t('Enter a URL and download it :)', 'Insira um URL e baixe-o :)')}</p>
+              <p className="text-white/50 text-lg">{t('Enter a URL and download it :)', 'Insira um URL e baixe :)')}</p>
             </div>
 
             {/* Input Section */}
@@ -699,7 +714,7 @@ export default function App() {
 
                 <button 
                   onClick={handleDownloadClick} 
-                  disabled={!url || !analyzedMedia || isAnalyzing || (isDownloading && currentProgress?.status === 'downloading')}
+                  disabled={!url || !analyzedMedia || isAnalyzing}
                   className="flex-1 bg-[#2a2a2a] hover:bg-[#333] disabled:opacity-50 text-white rounded-xl px-6 py-4 font-bold tracking-wider text-sm transition-colors"
                 >
                   {isAnalyzing ? t('LOADING...', 'CARREGANDO...') : t('DOWNLOAD', 'DOWNLOAD')}

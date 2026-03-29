@@ -5,8 +5,8 @@ import { open } from '@tauri-apps/plugin-dialog';
 interface SettingsScreenProps {
   downloadPath: string;
   onDownloadPathChange: (path: string) => void;
-  settings: { theme: 'dark' | 'light', soundEnabled: boolean, desktopNotification: boolean };
-  setSettings: React.Dispatch<React.SetStateAction<{ theme: 'dark' | 'light', soundEnabled: boolean, desktopNotification: boolean }>>;
+  settings: { theme: 'dark' | 'light', soundEnabled: boolean, desktopNotification: boolean, maxDownloads: number };
+  setSettings: React.Dispatch<React.SetStateAction<{ theme: 'dark' | 'light', soundEnabled: boolean, desktopNotification: boolean, maxDownloads: number }>>;
 }
 
 const isEnglish = navigator.language.toLowerCase().startsWith('en');
@@ -151,7 +151,14 @@ export default function SettingsScreen({ downloadPath, onDownloadPathChange, set
                 <span className="text-white/70">{t('Max simultaneous downloads', 'Máximo de downloads simultâneos')}</span>
                 <input 
                   type="number" 
-                  defaultValue={3}
+                  min={1}
+                  max={10}
+                  value={settings.maxDownloads}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value) || 1;
+                    const cappedVal = Math.max(1, Math.min(10, val));
+                    setSettings(s => ({ ...s, maxDownloads: cappedVal }));
+                  }}
                   className="w-20 bg-[#1a1a1a] border border-white/5 rounded-lg px-4 py-2 text-white text-center focus:outline-none focus:ring-1 focus:ring-white/20"
                 />
               </div>

@@ -180,15 +180,17 @@ async fn start_download(
     let stderr_file = std::fs::File::create(&stderr_path)
         .map_err(|e| format!("Falha ao criar ficheiro de log stderr: {}", e))?;
 
-    let child = Command::new(&ytdlp_path)
-        .args(&args)
+    let mut cmd = Command::new(&ytdlp_path);
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
 
+    let child = cmd
+        .args(&args)
         .env("PYTHONIOENCODING", "utf-8")
         .env("PYTHONUTF8", "1")
         .stdout(stdout_file)
         .stderr(stderr_file)
         .stdin(Stdio::null())
-        .creation_flags(0x08000000) // CREATE_NO_WINDOW on Windows
         .spawn()
         .map_err(|e| format!("Falha ao iniciar yt-dlp: {}", e))?;
 
@@ -461,15 +463,89 @@ fn cancel_download(
     state: tauri::State<'_, SharedDownloadState>,
     app: AppHandle,
 ) -> Result<(), String> {
-    let mut s = state.lock().unwrap();
-    if let Some(ref mut child) = s.process {
-        child.kill().map_err(|e| format!("Erro ao matar processo: {}", e))?;
-        println!("[Universal Downloader] Download cancelado — processo yt-dlp encerrado.");
+    
+    // ── 1. Coleta info e mata o processo com o lock ──
+    let (output_path, thumb_path) = {
+        let mut s = state.lock().unwrap();
+
+        let output_path = s.output_filepath.clone();
+        let thumb_path  = s.thumbnail_filepath.clone();
+
+        if let Some(ref mut child) = s.process {
+            let pid = child.id();
+            #[cfg(target_os = "windows")]
+            kill_process_tree(pid);
+            #[cfg(not(target_os = "windows"))]
+            let _ = child.kill();
+            println!("[Universal Downloader] Download cancelado — processo yt-dlp (PID {}) e filhos encerrados.", pid);
+        }
+
+        s.process = None;
+        s.is_paused = false;
+        s.output_filepath = None;
+        s.thumbnail_filepath = None;
+
+        (output_path, thumb_path)
+    }; // <── lock liberado aqui
+
+    // ── 2. Cleanup FORA do lock ──
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+
+    if let Some(p) = output_path {
+        let base_path = std::path::PathBuf::from(&p);
+
+        if let Some(parent) = base_path.parent() {
+            let filename_full = base_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+
+            let format_re = Regex::new(r"\.f\d+").unwrap();
+            let mut pure_stem = format_re.replace(&filename_full, "").to_string();
+            if let Some(pos) = pure_stem.rfind('.') {
+                pure_stem.truncate(pos);
+            }
+
+            let normalized_stem = normalize_title(&pure_stem);
+
+            match std::fs::read_dir(parent) {
+                Err(e) => println!("[Cleanup] ERRO ao ler diretório: {}", e),
+                Ok(entries) => {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if !path.is_file() { continue; }
+
+                        let filename = path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
+
+                        let normalized_filename = normalize_title(&filename);
+
+                        let is_related = normalized_filename.starts_with(&normalized_stem);
+                        let is_temp = filename.ends_with(".part")
+                            || filename.ends_with(".ytdl")
+                            || filename.ends_with(".jpg")
+                            || filename.ends_with(".webp")
+                            || Regex::new(r"\.f\d+\.\w+$").unwrap().is_match(&filename);
+
+                        if is_related && is_temp {
+                            wait_and_delete(&path, 8);
+                        }
+                    }
+                }
+            }
+        }
     }
-    s.process = None;
-    s.is_paused = false;
-    s.output_filepath = None;
-    s.thumbnail_filepath = None;
+
+    if let Some(tp) = thumb_path {
+        let tp_path = std::path::Path::new(&tp);
+        if tp_path.exists() {
+            let _ = std::fs::remove_file(tp_path);
+        }
+    }
 
     let _ = app.emit("download-progress", DownloadProgress {
         percent: 0.0,
@@ -550,6 +626,66 @@ fn get_process_tree(root_pid: u32) -> Vec<u32> {
         }
     }
     tree
+}
+
+fn wait_and_delete(path: &std::path::Path, retries: u32) -> bool {
+    for attempt in 0..retries {
+        if !path.exists() {
+            return true; // já foi embora
+        }
+        match std::fs::remove_file(path) {
+            Ok(_) => {
+                println!("[Cleanup] Removido: {}", path.display());
+                return true;
+            }
+            Err(e) => {
+                println!("[Cleanup] Tentativa {}/{} falhou para '{}': {}", 
+                    attempt + 1, retries, path.display(), e);
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+        }
+    }
+    println!("[Cleanup] FALHA: não foi possível remover '{}'", path.display());
+    false
+}
+
+// Função auxiliar: normaliza título para comparação
+fn normalize_title(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            // Substitui qualquer caractere que não seja letra/número/espaço por espaço
+            if c.is_alphanumeric() || c == ' ' {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        // Colapsa múltiplos espaços em um só e trim
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+#[cfg(target_os = "windows")]
+fn kill_process_tree(root_pid: u32) {
+    use winapi::um::processthreadsapi::{OpenProcess, TerminateProcess};
+    use winapi::um::winnt::PROCESS_TERMINATE;
+    use winapi::shared::minwindef::FALSE;
+    use winapi::um::handleapi::CloseHandle;
+
+    let pids = get_process_tree(root_pid);
+    // Kill from children to parents (reverse tree) is safer but TerminateProcess is ruthless anyway
+    for pid in pids.into_iter().rev() {
+        unsafe {
+            let h = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+            if !h.is_null() {
+                let _ = TerminateProcess(h, 1);
+                CloseHandle(h);
+            }
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -663,7 +799,11 @@ async fn get_video_metadata(app: AppHandle, url: String) -> Result<String, Strin
 
     // Run in a blocking thread so Tauri's async runtime isn't starved
     tokio::task::spawn_blocking(move || {
-        let output = std::process::Command::new(&ytdlp_path)
+        let mut cmd = std::process::Command::new(&ytdlp_path);
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(0x08000000);
+
+        let output = cmd
             .arg("--dump-json")
             .arg("--no-playlist")
             .arg(&url)
