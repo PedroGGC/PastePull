@@ -11,7 +11,7 @@ use std::io::{BufRead, BufReader};
 use std::os::windows::process::CommandExt;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 
 use std::collections::HashMap;
@@ -29,6 +29,9 @@ struct DownloadProgress {
     total_size: String,
     thumbnail_path: String,
     error_message: Option<String>,
+    url: String,
+    quality: String,
+    format: String,
 }
 
 struct DownloadHandle {
@@ -39,6 +42,26 @@ struct DownloadHandle {
     last_progress: Option<DownloadProgress>,
     output_dir: String,
     requested_title: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct HistoryEntry {
+    id: String,
+    title: String,
+    filename: String,
+    filepath: String,
+    url: String,
+    #[serde(rename = "type")]
+    file_type: String,
+    ext: String,
+    #[serde(rename = "completedAt")]
+    completed_at: u64,
+    #[serde(rename = "sizeLabel")]
+    size_label: String,
+    #[serde(rename = "thumbnailDataUrl")]
+    thumbnail_data_url: Option<String>,
+    format: String,
+    quality: String,
 }
 
 type SharedDownloadState = Arc<Mutex<HashMap<String, DownloadHandle>>>;
@@ -80,7 +103,6 @@ async fn start_download(
     let format_val = format_type.unwrap_or_else(|| "video".to_string());
     let output_template = format!("{}/%(title)s.%(ext)s", final_path.trim_end_matches(['/', '\\']));
 
-    use tauri::Manager;
     let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
     let ytdlp_path = resource_dir.join("yt-dlp.exe");
 
@@ -115,7 +137,7 @@ async fn start_download(
     ];
     
     let mut is_audio_only = false;
-    let q_str = quality.unwrap_or_else(|| "".to_string());
+    let q_str = quality.clone().unwrap_or_else(|| "".to_string());
     match (format_val.as_str(), q_str.as_str()) {
         ("audio", _) | (_, "AUDIO ONLY") => {
             is_audio_only = true;
@@ -155,6 +177,10 @@ async fn start_download(
 
     {
         let mut s = state.lock().unwrap();
+        let url_c = url.clone();
+        let quality_c = quality.clone().unwrap_or_default();
+        let format_c = format_val.clone();
+
         s.insert(task_id.clone(), DownloadHandle {
             process: Some(child),
             is_paused: false,
@@ -173,6 +199,9 @@ async fn start_download(
                 total_size: String::new(),
                 thumbnail_path: String::new(),
                 error_message: None,
+                url: url_c,
+                quality: quality_c,
+                format: format_c,
             }),
         });
     }
@@ -198,21 +227,20 @@ async fn start_download(
         std::thread::sleep(std::time::Duration::from_millis(300));
         let progress_re = Regex::new(r"\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+\s*\w+)\s+at\s+([\d.]+\s*\w+/s)\s+ETA\s+([\d:]+)").unwrap();
         let dest_re = Regex::new(r"\[download\] Destination: (.+)").unwrap();
+        let already_re = Regex::new(r"\[download\] (.+) has already been downloaded").unwrap();
         let thumb_write_re = Regex::new(r"\[info\] Writing video thumbnail .+ to: (.+)").unwrap();
         let thumb_conv_re = Regex::new(r#"\[ThumbnailsConvertor\] Converting thumbnail "(.+)" to (\w+)"#).unwrap();
         let merger_re = Regex::new(r#"\[Merger\] Merging formats into "(.+)""#).unwrap();
 
-        let mut last_progress = DownloadProgress {
-            id: id_clone_2.clone(),
-            percent: 0.0,
-            speed: "—".to_string(),
-            eta: "—".to_string(),
-            status: "downloading".to_string(),
-            filename: String::new(),
-            output_path: String::new(),
-            total_size: String::new(),
-            thumbnail_path: String::new(),
-            error_message: None,
+        let mut last_progress = {
+            let s = state_clone.lock().unwrap();
+            match s.get(&id_clone_2) {
+                Some(h) => match &h.last_progress {
+                    Some(p) => p.clone(),
+                    None => return,
+                },
+                None => return,
+            }
         };
 
         let file = match std::fs::File::open(&stdout_path_clone) {
@@ -239,10 +267,20 @@ async fn start_download(
 
                             if let Some(caps) = dest_re.captures(&line) {
                                 let path = caps[1].trim().to_string();
-                                last_progress.output_path = path.clone();
-                                last_progress.filename = std::path::Path::new(&path).file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                                let abs_path = std::path::Path::new(&path).to_string_lossy().to_string();
+                                last_progress.output_path = abs_path.clone();
+                                last_progress.filename = std::path::Path::new(&abs_path).file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
                                 let mut s = state_clone.lock().unwrap();
-                                if let Some(h) = s.get_mut(&id_clone_2) { h.output_filepath = Some(path); }
+                                if let Some(h) = s.get_mut(&id_clone_2) { h.output_filepath = Some(abs_path); }
+                            }
+
+                            if let Some(caps) = already_re.captures(&line) {
+                                let path = caps[1].trim().to_string();
+                                let abs_path = std::path::Path::new(&path).to_string_lossy().to_string();
+                                last_progress.output_path = abs_path.clone();
+                                last_progress.filename = std::path::Path::new(&abs_path).file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                                let mut s = state_clone.lock().unwrap();
+                                if let Some(h) = s.get_mut(&id_clone_2) { h.output_filepath = Some(abs_path); }
                             }
 
                             if let Some(caps) = thumb_write_re.captures(&line) {
@@ -269,8 +307,9 @@ async fn start_download(
                                 if last_emit_time.elapsed().as_millis() > 500 {
                                     let mut s = state_clone.lock().unwrap();
                                     if let Some(h) = s.get_mut(&id_clone_2) {
+                                        let normalized = std::path::Path::new(&merged).to_string_lossy().to_string();
                                         h.last_progress = Some(last_progress.clone());
-                                        h.output_filepath = Some(merged);
+                                        h.output_filepath = Some(normalized);
                                     }
                                     drop(s);
                                     let _ = app_clone.emit("download-progress", last_progress.clone());
@@ -360,6 +399,17 @@ async fn start_download(
                 let mut s = state_clone.lock().unwrap();
                 if let Some(h) = s.get_mut(&id_clone_2) {
                     h.last_progress = Some(last_progress.clone());
+                }
+            }
+
+            // Ensure output_path is set before completion emit
+            if last_progress.output_path.is_empty() {
+                let s = state_clone.lock().unwrap();
+                if let Some(h) = s.get(&id_clone_2) {
+                    if let Some(ref path) = h.output_filepath {
+                        last_progress.output_path = path.clone();
+                        last_progress.filename = std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                    }
                 }
             }
 
@@ -482,6 +532,9 @@ async fn cancel_download(
             total_size: String::new(),
             thumbnail_path: String::new(),
             error_message: None,
+            url: String::new(),
+            quality: String::new(),
+            format: String::new(),
         });
     });
 
@@ -892,6 +945,205 @@ fn check_files_exist(paths: Vec<String>) -> Vec<bool> {
     paths.into_iter().map(|p| std::path::Path::new(&p).exists()).collect()
 }
 
+#[tauri::command]
+fn resolve_paths(paths: Vec<String>) -> Vec<Option<String>> {
+    paths.into_iter().map(|p| {
+        let path = std::path::Path::new(&p);
+        if path.exists() {
+            return Some(p);
+        }
+
+        // Se não existe, tenta encontrar por fuzzy match no diretório pai
+        if let (Some(parent), Some(filename)) = (path.parent(), path.file_name()) {
+            let filename_str = filename.to_string_lossy();
+            let file_stem = std::path::Path::new(filename_str.as_ref())
+                .file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let target_norm = ascii_alphanum(file_stem);
+            let target_ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+
+            if target_norm.len() >= 5 {
+                if let Ok(entries) = std::fs::read_dir(parent) {
+                    let mut best_match: Option<(usize, String)> = None;
+                    for entry in entries.flatten() {
+                        let entry_path = entry.path();
+                        if !entry_path.is_file() { continue; }
+
+                        let entry_name = entry.file_name();
+                        let entry_name_str = entry_name.to_string_lossy();
+                        let entry_stem = std::path::Path::new(entry_name_str.as_ref())
+                            .file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                        let entry_norm = ascii_alphanum(entry_stem);
+                        let entry_ext = entry_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+
+                        // Permite correspondência mesmo se extensões diferem levemente (mp4 vs mkv)
+                        let ext_match = target_ext.is_empty() || entry_ext.is_empty() 
+                            || target_ext == entry_ext 
+                            || (target_ext == "mp4" && entry_ext == "m4v")
+                            || (target_ext == "m4v" && entry_ext == "mp4");
+
+                        if !ext_match { continue; }
+
+                        // Fuzzy match: verifica se um é substring do outro após normalização
+                        // ou se há correspondência de prefixo suficiente
+                        let common = target_norm.chars()
+                            .zip(entry_norm.chars())
+                            .take_while(|(a, b)| a == b)
+                            .count();
+
+                        let is_substring = entry_norm.contains(&target_norm) || target_norm.contains(&entry_norm);
+                        let prefix_match = common >= target_norm.len().min(entry_norm.len()).min(8) && common >= 5;
+
+                        if (prefix_match || is_substring) && common >= 5 {
+                            if common > best_match.as_ref().map(|(n, _)| *n).unwrap_or(0) {
+                                best_match = Some((common, entry_path.to_string_lossy().to_string()));
+                            }
+                        }
+                    }
+                    if let Some((_, found_path)) = best_match {
+                        println!("[Resolve] Fuzzy matched: {} -> {}", p, found_path);
+                        return Some(found_path);
+                    }
+                }
+            }
+
+            // Fallback adicional: tenta encontrar apenas pelo prefixo do título
+            let search_key = file_stem
+                .chars()
+                .take_while(|c| !c.is_ascii_digit())
+                .collect::<String>();
+            
+            if search_key.len() >= 5 {
+                if let Ok(entries) = std::fs::read_dir(parent) {
+                    for entry in entries.flatten() {
+                        let entry_path = entry.path();
+                        if !entry_path.is_file() { continue; }
+                        
+                        let entry_name = entry_path.file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("");
+                        
+                        let normalized_search = search_key.to_lowercase();
+                        let normalized_entry = entry_name.to_lowercase();
+                        
+                        if normalized_entry.contains(&normalized_search) || 
+                           normalized_search.contains(&normalized_entry.split('.').next().unwrap_or(&normalized_entry)) {
+                            let ext = entry_path.extension()
+                                .and_then(|e| e.to_str())
+                                .unwrap_or("")
+                                .to_lowercase();
+                            let valid_exts = ["mp4", "mkv", "avi", "mov", "webm", "m4v", "mp3", "flac", "aac", "wav", "ogg", "m4a", "opus"];
+                            if valid_exts.contains(&ext.as_str()) {
+                                println!("[Resolve] Prefix fallback: {} -> {}", p, entry_path.display());
+                                return Some(entry_path.to_string_lossy().to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }).collect()
+}
+
+#[tauri::command]
+fn scan_download_folder(folder_path: String) -> Result<Vec<HistoryEntry>, String> {
+    let path = std::path::Path::new(&folder_path);
+    if !path.exists() || !path.is_dir() {
+        return Err("Diretório não existe".to_string());
+    }
+
+    let mut items = Vec::new();
+    let video_exts = vec!["mp4", "mkv", "avi", "mov", "webm", "flv", "m4v", "ts"];
+    let audio_exts = vec!["mp3", "flac", "aac", "wav", "ogg", "m4a", "opus"];
+
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            if !entry_path.is_file() { continue; }
+
+            let filename = entry_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let ext = entry_path.extension().unwrap_or_default().to_string_lossy().to_string().to_lowercase();
+
+            if filename.ends_with(".part") || filename.ends_with(".ytdl") || filename.ends_with(".jpg") || filename.ends_with(".webp") {
+                continue;
+            }
+
+            let file_type = if video_exts.contains(&ext.as_str()) {
+                "video"
+            } else if audio_exts.contains(&ext.as_str()) {
+                "audio"
+            } else {
+                continue;
+            };
+
+            let metadata = entry.metadata().map_err(|e| e.to_string())?;
+            let completed_at = metadata.modified().unwrap_or(std::time::SystemTime::now())
+                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+            
+            let size = metadata.len();
+            let size_label = if size >= 1024 * 1024 * 1024 {
+                format!("{:.2} GB", size as f64 / (1024.0 * 1024.0 * 1024.0))
+            } else if size >= 1024 * 1024 {
+                format!("{:.2} MB", size as f64 / (1024.0 * 1024.0))
+            } else {
+                format!("{} KB", size / 1024)
+            };
+
+            items.push(HistoryEntry {
+                id: Uuid::new_v4().to_string(), // Temporary ID for scanned items
+                title: filename.clone(),
+                filename,
+                filepath: entry_path.to_string_lossy().to_string(),
+                url: "".to_string(), // Unknown from disk scan
+                file_type: file_type.to_string(),
+                ext: ext.to_uppercase(),
+                completed_at,
+                size_label,
+                thumbnail_data_url: None,
+                format: "".to_string(),
+                quality: "".to_string(),
+            });
+        }
+    }
+
+    items.sort_by(|a, b| b.completed_at.cmp(&a.completed_at));
+    Ok(items)
+}
+
+#[tauri::command]
+fn save_history(app: AppHandle, mut items: Vec<HistoryEntry>) -> Result<(), String> {
+    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let history_dir = app_data.join("persistence");
+    if !history_dir.exists() {
+        std::fs::create_dir_all(&history_dir).map_err(|e| e.to_string())?;
+    }
+    let history_file = history_dir.join("history.json");
+
+    // Order by newest and limit to 100
+    items.sort_by(|a, b| b.completed_at.cmp(&a.completed_at));
+    if items.len() > 100 {
+        items.truncate(100);
+    }
+
+    let json = serde_json::to_string_pretty(&items).map_err(|e| e.to_string())?;
+    std::fs::write(history_file, json).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn load_history(app: AppHandle) -> Result<Vec<HistoryEntry>, String> {
+    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let history_file = app_data.join("persistence").join("history.json");
+
+    if !history_file.exists() {
+        return Ok(Vec::new());
+    }
+
+    let json = std::fs::read_to_string(history_file).map_err(|e| e.to_string())?;
+    let items: Vec<HistoryEntry> = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+    Ok(items)
+}
+
 fn main() {
     let download_state: SharedDownloadState = Arc::new(Mutex::new(HashMap::new()));
 
@@ -908,7 +1160,11 @@ fn main() {
             open_folder_natively,
             find_file_by_title,
             read_thumbnail_as_base64,
-            check_files_exist
+            check_files_exist,
+            resolve_paths,
+            scan_download_folder,
+            save_history,
+            load_history
         ])
         .run(tauri::generate_context!())
         .expect("Erro ao iniciar o aplicativo Tauri");

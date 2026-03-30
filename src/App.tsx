@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Folder,
@@ -15,7 +15,8 @@ import {
   Clock,
   FileDown,
   FolderOpen,
-  HardDrive
+  HardDrive,
+  Video
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -36,10 +37,14 @@ interface DownloadProgress {
   thumbnail?: string;
   thumbnailBase64?: string;
   error_message?: string;
+  url: string;
+  quality: string;
+  format: string;
 }
 
 export interface DownloadHistoryItem {
   id: string;
+  url: string;
   title: string;
   filename: string;
   filepath: string;
@@ -47,7 +52,10 @@ export interface DownloadHistoryItem {
   ext?: string;
   completedAt: number;
   sizeLabel: string;
-  thumbnailDataUrl?: string; // stored base64 image data
+  thumbnailDataUrl?: string;
+  format: string;
+  quality: string;
+  isMissing?: boolean;
 }
 
 function inferFileType(filename: string): 'video' | 'audio' | 'other' {
@@ -115,7 +123,8 @@ function formatYtDlpSize(sizeStr: string): string {
  * Example:
  *   "Big Buck Bunny [abc123].mp4" → "Big Buck Bunny"
  */
-function cleanTitle(filename: string): string {
+function cleanTitle(filename: string | undefined): string {
+  if (!filename) return t('Unknown Title', 'Título Desconhecido');
   let cleanStr = filename.replace(/\.[a-zA-Z0-9]{2,5}$/i, '');
   cleanStr = cleanStr.replace(/[.\s-]+(?:fhls|dash|hls|avc|aac|opus|av1|vp9|f\d{3})[-.]?[\w.-]*$/i, '');
   cleanStr = cleanStr.replace(/\s+-\s+https?:\/\/[^\s]+|https?:\/\/[^\s]+/i, '');
@@ -134,6 +143,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [sortOrder, setSortOrder] = useState<'newest' | 'oldest'>('newest');
   const [isDownloading, setIsDownloading] = useState(false);
+  const [showArchive, setShowArchive] = useState(false);
   const [url, setUrl] = useState('');
   const [currentProgress, setCurrentProgress] = useState<Record<string, DownloadProgress>>({});
   const [cancelingId, setCancelingId] = useState<string | null>(null);
@@ -158,47 +168,56 @@ export default function App() {
     return { theme: 'dark', soundEnabled: false, desktopNotification: false, maxDownloads: 3 };
   });
 
-  const [downloadHistory, setDownloadHistory] = useState<DownloadHistoryItem[]>(() => {
-    try {
-      const saved = localStorage.getItem('ud_download_history');
-      if (!saved) return [];
-      const parsed: DownloadHistoryItem[] = JSON.parse(saved);
-      // Filter out old items that stored a local file path instead of a base64 data URL or HTTP link
-      const clean = parsed.map(item => ({
-        ...item,
-        thumbnailDataUrl: (item.thumbnailDataUrl?.startsWith('data:') || item.thumbnailDataUrl?.startsWith('http')) ? item.thumbnailDataUrl : undefined,
-      }));
-      // Persist the cleaned version back
-      localStorage.setItem('ud_download_history', JSON.stringify(clean));
-      return clean;
-    } catch {
-      return [];
-    }
-  });
+  const [downloadHistory, setDownloadHistory] = useState<DownloadHistoryItem[]>([]);
+
+  // Carrega histórico do Backend no boot
+  useEffect(() => {
+    invoke<DownloadHistoryItem[]>('load_history')
+      .then(items => {
+        setDownloadHistory(items);
+      })
+      .catch(err => console.error('[History] Load failed:', err));
+  }, []);
+
+  const saveHistoryToBackend = useCallback(async (items: DownloadHistoryItem[]) => {
+    try { await invoke('save_history', { items }); }
+    catch (err) { console.error('[History] Save failed:', err); }
+  }, []);
 
   useEffect(() => {
-    if (currentScreen === 'downloads' && downloadHistory.length > 0) {
+    if ((currentScreen === 'search' || currentScreen === 'downloads') && downloadHistory.length > 0) {
       const paths = downloadHistory.map(item => item.filepath || '');
-      invoke<boolean[]>('check_files_exist', { paths })
-        .then((existsArray) => {
+      invoke<(string | null)[]>('resolve_paths', { paths })
+        .then((resolvedArray) => {
           let hasChanges = false;
-          const validItems = downloadHistory.filter((item, index) => {
-            // Keep the item if it doesn't have a specific filepath, 
-            // if the filepath suffers from Windows stdout encoding loss (), 
-            // or if it successfully passes the Rust disk check.
-            const stillValid = !item.filepath || item.filepath.includes('') || existsArray[index];
-            if (!stillValid) hasChanges = true;
-            return stillValid;
+          const updatedHistory = downloadHistory.map((item, index) => {
+            const resolvedPath = resolvedArray[index];
+            const exists = !!resolvedPath;
+            const isMissing = !exists && !!item.filepath;
+            
+            let newItem = { ...item, isMissing };
+            
+            // If path was mangled by encoding, update to actual path found
+            if (resolvedPath && resolvedPath !== item.filepath) {
+              console.log(`[Sync] Path corrected (Encoding Fix):`, item.filepath, '->', resolvedPath);
+              newItem.filepath = resolvedPath;
+              hasChanges = true;
+            }
+
+            if (item.isMissing !== isMissing) {
+                console.log(`[Sync] File ${isMissing ? 'Missing' : 'Restored'}:`, item.title, item.filepath);
+                hasChanges = true;
+            }
+            return newItem;
           });
           if (hasChanges) {
-            setDownloadHistory(validItems);
-            localStorage.setItem('ud_download_history', JSON.stringify(validItems));
-            console.log('[Sync] Removed deleted files from history.');
+            setDownloadHistory(updatedHistory);
+            saveHistoryToBackend(updatedHistory);
           }
         })
         .catch(err => console.error('[Sync] Failed to verify files:', err));
     }
-  }, [currentScreen]);
+  }, [currentScreen, downloadHistory.length]); // Check on screen change or when list size changes 
 
   const [isPaused, setIsPaused] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
@@ -211,7 +230,7 @@ export default function App() {
   const [selectedFormat, setSelectedFormat] = useState<'video' | 'audio'>('video');
   const [mediaCapabilities, setMediaCapabilities] = useState({ video: true, audio: true });
   
-  const [analyzedMedia, setAnalyzedMedia] = useState<{ qualityLabel: string, type: 'video' | 'audio' } | null>(null);
+  const [analyzedMedia, setAnalyzedMedia] = useState<{ title: string, thumbnail: string, qualityLabel: string, type: 'video' | 'audio' } | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   // Automatically update quality dropdown options when the format changes
@@ -271,7 +290,12 @@ export default function App() {
         
         let type: 'video' | 'audio' = vOptions.length === 0 ? 'audio' : 'video';
         
-        setAnalyzedMedia({ qualityLabel: vOptions.length > 0 ? vOptions[0] : 'AUDIO ONLY', type });
+        setAnalyzedMedia({ 
+          title: meta.title || '', 
+          thumbnail: meta.thumbnail || '', 
+          qualityLabel: vOptions.length > 0 ? vOptions[0] : 'AUDIO ONLY', 
+          type 
+        });
         setMediaCapabilities({ video: vOptions.length > 0, audio: true }); 
         
         // Se a url for focada em audio puramente, setar como audio automatically
@@ -283,6 +307,15 @@ export default function App() {
         setAnalyzedMedia(null);
         setMediaCapabilities({ video: true, audio: true }); // Fallback para deixar tentar
         setVideoQualities(['BEST QUALITY']);
+        
+        const errMsg = String(err).toLowerCase();
+        if (errMsg.includes('failed to resolve') || errMsg.includes('getaddrinfo')) {
+          setNotification({ 
+            type: 'error', 
+            message: t('Network error: Could not reach YouTube. Check your internet.', 'Erro de rede: Não foi possível acessar o YouTube. Verifique sua conexão.') 
+          });
+          setTimeout(() => setNotification(null), 10000);
+        }
       } finally {
         setIsAnalyzing(false);
       }
@@ -341,38 +374,55 @@ export default function App() {
           title: metadataTitleRef.current || existing?.title || p.title || p.filename,
         };
 
-        if (p.status === 'completed') {
-          // Convert thumbnail to base64 for history
-          const resolveThumbnail = async () => {
-            if (!p.thumbnail_path) return null;
-            try { return await invoke<string>('read_thumbnail_as_base64', { path: p.thumbnail_path }); }
-            catch (err) { console.error('History thumb error:', err); return null; }
-          };
-
-          resolveThumbnail().then(dataUrl => {
-            setTimeout(() => {
-              playNotificationSound();
-              const newItem: DownloadHistoryItem = {
-                id: Date.now().toString(),
-                title: cleanTitle(metadataTitleRef.current || p.title || p.filename),
-                filename: p.filename,
-                filepath: p.output_path || '',
-                type: inferFileType(p.filename),
-                ext: (p.filename.split('.').pop() || '').toUpperCase(),
-                completedAt: Date.now(),
-                sizeLabel: formatYtDlpSize(p.total_size || ''),
-                thumbnailDataUrl: dataUrl || metadataThumbnailRef.current || undefined,
-              };
-              setDownloadHistory(h => [newItem, ...h].slice(0, 100));
-              setCurrentProgress(curr => {
-                const next = { ...curr };
-                delete next[p.id];
-                return next;
-              });
-            }, 2000);
-          });
-          return { ...prev, [p.id]: { ...updated, percent: 100 } };
-        }
+        if (p.status === 'skipped' || p.status === 'completed') {
+           // Convert thumbnail to base64 for history
+           const resolveThumbnail = async () => {
+             if (!p.thumbnail_path && !p.thumbnail) return null;
+             if (p.thumbnailBase64) return p.thumbnailBase64;
+             try { return await invoke<string>('read_thumbnail_as_base64', { path: p.thumbnail_path || '' }); }
+             catch (err) { console.error('History thumb error:', err); return null; }
+           };
+ 
+           resolveThumbnail().then(dataUrl => {
+             setTimeout(() => {
+               playNotificationSound();
+               const historyId = btoa(`${p.url}_${p.quality}_${p.format}`).replace(/=/g, '');
+               const newItem: DownloadHistoryItem = {
+                 id: historyId,
+                 url: p.url,
+                 title: cleanTitle(metadataTitleRef.current || p.title || p.filename),
+                 filename: p.filename,
+                 filepath: p.output_path || '',
+                 type: inferFileType(p.filename),
+                 ext: (p.filename.split('.').pop() || '').toUpperCase(),
+                 completedAt: Date.now(),
+                 sizeLabel: formatYtDlpSize(p.total_size || ''),
+                 thumbnailDataUrl: dataUrl || metadataThumbnailRef.current || undefined,
+                 format: p.format,
+                 quality: p.quality,
+               };
+ 
+               setDownloadHistory(h => {
+                 const filtered = h.filter(item => item.id !== newItem.id);
+                 const next = [newItem, ...filtered].slice(0, 100);
+                 saveHistoryToBackend(next);
+                 return next;
+               });
+ 
+               if (p.status === 'skipped') {
+                 setNotification({type: 'warning', message: t('Already downloaded!', 'Já foi baixado!')});
+                 setTimeout(() => setNotification(null), 10000);
+               }
+ 
+               setCurrentProgress(curr => {
+                 const next = { ...curr };
+                 delete next[p.id];
+                 return next;
+               });
+             }, 2000);
+           });
+           return { ...prev, [p.id]: { ...updated, percent: 100 } };
+         }
 
         if (p.status === 'error' || p.status === 'idle') {
           if (p.status === 'error') {
@@ -397,20 +447,6 @@ export default function App() {
               return next;
             });
           }, 4000);
-          return { ...prev, [p.id]: updated };
-        }
-
-        if (p.status === 'skipped') {
-          playNotificationSound();
-          setNotification({type: 'warning', message: t('Already downloaded!', 'Já foi baixado!')});
-          setTimeout(() => setNotification(null), 10000);
-          setTimeout(() => {
-            setCurrentProgress(curr => {
-              const next = { ...curr };
-              delete next[p.id];
-              return next;
-            });
-          }, 2000);
           return { ...prev, [p.id]: updated };
         }
 
@@ -476,6 +512,15 @@ export default function App() {
         quality: selectedQuality || null, 
         formatType: selectedFormat,
         title: titleToUse
+      });
+
+      // Remove existing history item with same intent (url + quality + format)
+      // to avoid duplicates and show the active download instead
+      const intentId = btoa(`${url}_${selectedQuality || ''}_${selectedFormat}`).replace(/=/g, '');
+      setDownloadHistory(h => {
+        const next = h.filter(item => item.id !== intentId);
+        if (next.length !== h.length) saveHistoryToBackend(next);
+        return next;
       });
 
       setCurrentProgress(prev => ({
@@ -638,6 +683,32 @@ export default function App() {
                     }}
                     className="w-full bg-[#1a1a1a] border border-white/5 rounded-xl px-6 py-5 text-white placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-white/20 transition-all"
                   />
+
+                  <AnimatePresence mode="wait">
+                    {analyzedMedia && !(Object.values(currentProgress) as DownloadProgress[]).some(p => p.url === url && p.status !== 'completed') && (
+                      <motion.div 
+                        key="analysis-preview"
+                        initial={{ opacity: 0, y: 10, height: 0 }}
+                        animate={{ opacity: 1, y: 0, height: 'auto' }}
+                        exit={{ opacity: 0, y: 10, height: 0 }}
+                        transition={{ duration: 0.3, ease: "easeOut" }}
+                        className="overflow-hidden"
+                      >
+                        <div className="bg-yellow-400/5 border border-yellow-400/20 rounded-2xl p-5 flex items-center gap-5 mt-2">
+                          <div className="w-14 h-14 bg-white/5 rounded-lg border border-white/10 flex items-center justify-center shrink-0 overflow-hidden relative group">
+                            {analyzedMedia.thumbnail ? <img src={analyzedMedia.thumbnail} alt="thumb" className="w-full h-full object-cover" /> : <Play size={20} className="text-white/30" />}
+                            <div className="absolute inset-0 bg-yellow-400/10 animate-pulse opacity-50" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[9px] font-bold tracking-[0.2em] text-yellow-400/70 mb-1 uppercase">{t('Analysis Complete', 'Análise Concluída')}</div>
+                            <p className="text-sm font-bold text-white truncate w-full" title={analyzedMedia.title}>{cleanTitle(analyzedMedia.title)}</p>
+                            <p className="text-[10px] text-white/40 mt-0.5 font-medium">{t('Ready to pull', 'Pronto para baixar')}</p>
+                          </div>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
                   <div className="flex flex-col sm:flex-row gap-4 relative">
                     <div className="w-full sm:w-32 shrink-0 relative">
                       <select
@@ -697,7 +768,8 @@ export default function App() {
                         <div className="flex justify-between items-end gap-4">
                           <div className="min-w-0 flex-1">
                             <div className="text-[10px] font-bold tracking-widest text-white/50 mb-1">{t('ACTIVE DOWNLOAD', 'DOWNLOAD ATIVO')}</div>
-                            <p className="text-sm font-semibold text-white truncate w-full">{p.status === 'preparing' ? t('Preparing...', 'Preparando...') : cleanTitle(p.title || p.filename || t('Video', 'Vídeo'))}</p>
+                            <p className="text-sm font-semibold text-white truncate w-full" title={p.title || p.filename}>{p.status === 'preparing' ? t('Preparing...', 'Preparando...') : cleanTitle(p.title || p.filename || t('Video', 'Vídeo'))}</p>
+                            <p className="text-[10px] text-white/30 truncate mt-0.5 font-medium">{p.output_path || p.filename}</p>
                           </div>
                           <span className="text-xs font-bold text-yellow-400 tabular-nums shrink-0 pb-0.5">{p.percent > 0 || p.status !== 'preparing' ? `${Math.round(p.percent)}%` : '...'}</span>
                         </div>
@@ -730,9 +802,32 @@ export default function App() {
                           </div>
                           <div className="flex-1 min-w-0">
                             <p className="text-sm font-medium text-white/90 truncate">{item.title}</p>
-                            <p className="text-xs text-white/35 mt-0.5 truncate">{isEnglish ? 'Completed' : 'Concluído'} {formatRelativeTime(item.completedAt)}{item.sizeLabel ? ` • ${item.sizeLabel}` : ''}</p>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              {item.isMissing ? (
+                                <span className="text-[10px] font-bold text-red-400/80 uppercase tracking-wider">{t('Missing', 'Removido')}</span>
+                              ) : (
+                                <p className="text-xs text-white/35 truncate">{isEnglish ? 'Completed' : 'Concluído'} {formatRelativeTime(item.completedAt)}{item.sizeLabel ? ` • ${item.sizeLabel}` : ''}</p>
+                              )}
+                            </div>
                           </div>
-                          <button onClick={async (e) => { e.stopPropagation(); try { const folder = downloadPath || ''; if (folder) await invoke('open_folder_natively', { path: folder }); } catch (error) { console.error('Erro ao abrir pasta:', error); } }} className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-white/10 transition-all duration-150 cursor-pointer"><FolderOpen size={15} className="text-white/50 hover:text-white/80 transition-colors" /></button>
+                          <div className="flex items-center gap-1">
+                            {item.isMissing && (
+                              <button 
+                                onClick={() => {
+                                  setUrl(item.url);
+                                  setSelectedFormat(item.format as any);
+                                  setSelectedQuality(item.quality);
+                                  setCurrentScreen('search');
+                                  setNotification({ type: 'success', message: t('Download settings restored!', 'Configurações restauradas!') });
+                                  setTimeout(() => setNotification(null), 10000);
+                                }}
+                                className="px-3 py-1.5 rounded-lg bg-yellow-400/10 hover:bg-yellow-400/20 text-yellow-500 text-[10px] font-bold transition-all uppercase tracking-wider"
+                              >
+                                {t('Redownload', 'Baixar de Novo')}
+                              </button>
+                            )}
+                            <button onClick={async (e) => { e.stopPropagation(); try { const folder = (item.filepath && item.filepath.length > 3) ? item.filepath.substring(0, item.filepath.lastIndexOf('\\')) : downloadPath; if (folder) await invoke('open_folder_natively', { path: folder }); } catch (error) { console.error('Erro ao abrir pasta:', error); } }} className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-white/10 transition-all duration-150 cursor-pointer"><FolderOpen size={15} className="text-white/50 hover:text-white/80 transition-colors" /></button>
+                          </div>
                         </li>
                       ))}
                     </ul>
@@ -747,6 +842,24 @@ export default function App() {
                   <div className="flex items-center justify-between">
                     <h2 className="text-2xl font-bold tracking-tight text-white">Downloads</h2>
                     <div className="flex items-center gap-3">
+                      {downloadHistory.length > 0 && (
+                        <div className="flex items-center bg-white/5 p-1 rounded-xl border border-white/5">
+                          <button 
+                            onClick={() => setShowArchive(false)} 
+                            className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all text-[10px] font-bold uppercase tracking-wider ${!showArchive ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/60'}`}
+                          >
+                            <Folder size={14} />
+                            {t('DOWNLOADS', 'DOWNLOADS')}
+                          </button>
+                          <button 
+                            onClick={() => setShowArchive(true)} 
+                            className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-all text-[10px] font-bold uppercase tracking-wider ${showArchive ? 'bg-yellow-400/10 text-yellow-500' : 'text-white/40 hover:text-white/60'}`}
+                          >
+                            <Clock size={14} />
+                            {t('HISTORY', 'HISTÓRICO')}
+                          </button>
+                        </div>
+                      )}
                       {downloadHistory.length > 0 && (
                         <button onClick={() => setSortOrder(prev => prev === 'newest' ? 'oldest' : 'newest')} className="flex items-center gap-1.5 bg-white/5 hover:bg-white/10 text-white/70 px-3 py-1.5 rounded-lg transition-colors text-xs font-semibold uppercase tracking-widest cursor-pointer">
                           <Clock size={14} className={`transition-transform duration-300 ${sortOrder === 'oldest' ? 'rotate-180' : ''}`} />
@@ -771,23 +884,44 @@ export default function App() {
                 ) : (
                   <div className="grid gap-3">
                     {(() => {
-                      let list = downloadHistory.filter(item => item.title.toLowerCase().includes(searchQuery.toLowerCase()));
+                      let list = downloadHistory.filter(item => 
+                        item.title.toLowerCase().includes(searchQuery.toLowerCase()) && 
+                        (showArchive ? item.isMissing : !item.isMissing)
+                      );
                       if (sortOrder === 'oldest') list = [...list].reverse();
                       return list.map((item) => (
                         <div key={item.id} className="group flex flex-col sm:flex-row items-center gap-4 p-4 bg-[#1a1a1a] border border-white/5 rounded-2xl hover:bg-[#1e1e1e] transition-colors">
                           <div className="shrink-0 w-full sm:w-32 h-20 rounded-lg overflow-hidden bg-white/5 border border-white/10 flex items-center justify-center">
                             {item.thumbnailDataUrl?.startsWith('data:') || item.thumbnailDataUrl?.startsWith('http') ? <img src={item.thumbnailDataUrl} alt={item.title} className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} /> : { video: <Film size={24} className="text-yellow-400/70" />, audio: <Music size={24} className="text-blue-400/70" /> }[item.type as string] || <FileDown size={24} className="text-white/30" />}
                           </div>
-                          <div className="flex-1 min-w-0 w-full space-y-2">
+                          <div className="flex-1 min-w-0 w-full space-y-1">
                             <h3 className="text-sm font-semibold text-white/90 line-clamp-2" title={item.title}>{item.title}</h3>
-                            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-white/40">
-                              <span className="flex items-center gap-1.5"><Clock size={12} /> {formatRelativeTime(item.completedAt)}</span>
-                              {item.sizeLabel && <span className="flex items-center gap-1.5"><HardDrive size={12} /> {item.sizeLabel}</span>}
-                              {item.ext && <span className="flex items-center gap-1.5 text-white/60 font-bold tracking-widest uppercase"><span className="w-1.5 h-1.5 rounded-full bg-white/20"></span>{item.ext}</span>}
+                            <p className="text-[10px] text-white/30 truncate font-medium" title={item.filepath}>{item.filepath ? (item.filepath.includes('\\') ? item.filepath.substring(0, item.filepath.lastIndexOf('\\')) : item.filepath.substring(0, item.filepath.lastIndexOf('/'))) : ''}</p>
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-white/40">
+                              <span className="flex items-center gap-1.5 text-white/60 font-bold tracking-widest uppercase"><span className="w-1.5 h-1.5 rounded-full bg-white/60"></span><Clock size={10} />{formatRelativeTime(item.completedAt)}</span>
+                              {item.sizeLabel && <span className="flex items-center gap-1.5 text-white/60 font-bold tracking-widest uppercase"><span className="w-1.5 h-1.5 rounded-full bg-white/60"></span><HardDrive size={10} />{item.sizeLabel}</span>}
+                              {item.quality && <span className="flex items-center gap-1.5 text-white/60 font-bold tracking-widest uppercase"><span className="w-1.5 h-1.5 rounded-full bg-white/60"></span><Video size={10} />{item.quality.replace('P VIDEO', 'P').replace('P video', 'P')}</span>}
+                              {item.ext && <span className="flex items-center gap-1.5 text-white/60 font-bold tracking-widest uppercase"><span className="w-1.5 h-1.5 rounded-full bg-white/60"></span><FileDown size={10} />{item.ext}</span>}
                             </div>
                           </div>
-                          <div className="shrink-0 w-full sm:w-auto flex justify-end">
-                            <button onClick={async (e) => { e.stopPropagation(); try { const folder = item.filepath.substring(0, Math.max(item.filepath.lastIndexOf('\\'), item.filepath.lastIndexOf('/'))) || downloadPath || ''; if (folder) await invoke('open_folder_natively', { path: folder }); } catch (error) { console.error('Erro ao abrir pasta:', error); } }} className="flex items-center gap-2 bg-white/5 hover:bg-white/10 px-4 py-2.5 rounded-lg transition-colors text-xs font-semibold text-white/70 hover:text-white"><FolderOpen size={14} /><span>{t('Open Folder', 'Abrir Pasta')}</span></button>
+                          <div className="shrink-0 w-full sm:w-auto flex justify-end gap-2">
+                            {item.isMissing ? (
+                               <button 
+                                onClick={() => {
+                                  setUrl(item.url);
+                                  setSelectedFormat(item.format as any);
+                                  setSelectedQuality(item.quality);
+                                  setCurrentScreen('search');
+                                  setNotification({ type: 'success', message: t('Download settings restored!', 'Configurações restauradas!') });
+                                  setTimeout(() => setNotification(null), 10000);
+                                }}
+                                className="px-4 py-2.5 rounded-lg bg-yellow-400/10 hover:bg-yellow-400/20 text-yellow-500 text-xs font-bold transition-all uppercase tracking-wider"
+                              >
+                                {t('Redownload', 'Baixar de Novo')}
+                              </button>
+                            ) : (
+                              <button onClick={async (e) => { e.stopPropagation(); try { const folder = item.filepath.substring(0, Math.max(item.filepath.lastIndexOf('\\'), item.filepath.lastIndexOf('/'))) || downloadPath || ''; if (folder) await invoke('open_folder_natively', { path: folder }); } catch (error) { console.error('Erro ao abrir pasta:', error); } }} className="flex items-center gap-2 bg-white/5 hover:bg-white/10 px-4 py-2.5 rounded-lg transition-colors text-xs font-semibold text-white/70 hover:text-white"><FolderOpen size={14} /><span>{t('Open Folder', 'Abrir Pasta')}</span></button>
+                            )}
                           </div>
                         </div>
                       ));
