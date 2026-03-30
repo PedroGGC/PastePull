@@ -14,8 +14,12 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_dialog::DialogExt;
 
+use std::collections::HashMap;
+use uuid::Uuid;
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 struct DownloadProgress {
+    id: String,
     percent: f64,
     speed: String,
     eta: String,
@@ -24,27 +28,20 @@ struct DownloadProgress {
     output_path: String,
     total_size: String,
     thumbnail_path: String,
+    error_message: Option<String>,
 }
 
-struct DownloadState {
+struct DownloadHandle {
     process: Option<Child>,
     is_paused: bool,
     output_filepath: Option<String>,
     thumbnail_filepath: Option<String>,
+    last_progress: Option<DownloadProgress>,
+    output_dir: String,
+    requested_title: String,
 }
 
-impl Default for DownloadState {
-    fn default() -> Self {
-        Self {
-            process: None,
-            is_paused: false,
-            output_filepath: None,
-            thumbnail_filepath: None,
-        }
-    }
-}
-
-type SharedDownloadState = Arc<Mutex<DownloadState>>;
+type SharedDownloadState = Arc<Mutex<HashMap<String, DownloadHandle>>>;
 
 fn get_default_download_path() -> String {
     dirs::download_dir()
@@ -60,9 +57,10 @@ async fn start_download(
     output_dir: String,
     quality: Option<String>,
     format_type: Option<String>,
+    title: Option<String>, // <── Adicionado
     app: AppHandle,
     state: tauri::State<'_, SharedDownloadState>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     if url.is_empty() {
         return Err("URL não fornecida".to_string());
     }
@@ -71,6 +69,8 @@ async fn start_download(
         return Err("URL inválida".to_string());
     }
 
+    let task_id = Uuid::new_v4().to_string();
+
     let final_path = if output_dir.is_empty() || output_dir == "default_path" {
         get_default_download_path()
     } else {
@@ -78,7 +78,6 @@ async fn start_download(
     };
 
     let format_val = format_type.unwrap_or_else(|| "video".to_string());
-
     let output_template = format!("{}/%(title)s.%(ext)s", final_path.trim_end_matches(['/', '\\']));
 
     use tauri::Manager;
@@ -86,103 +85,63 @@ async fn start_download(
     let ytdlp_path = resource_dir.join("yt-dlp.exe");
 
     if !ytdlp_path.exists() {
-        return Err(format!("yt-dlp.exe não encontrado no caminho: {}", ytdlp_path.display()));
+        return Err(format!("yt-dlp.exe não encontrado: {}", ytdlp_path.display()));
     }
 
     fn find_available_browser() -> Option<String> {
         let appdata = std::env::var("APPDATA").unwrap_or_default();
         let localappdata = std::env::var("LOCALAPPDATA").unwrap_or_default();
-
         if !appdata.is_empty() {
-            let firefox_path = format!("{}\\Mozilla\\Firefox\\Profiles", appdata);
-            if std::path::Path::new(&firefox_path).exists() {
-                return Some("firefox".to_string());
-            }
+            let path = format!("{}\\Mozilla\\Firefox\\Profiles", appdata);
+            if std::path::Path::new(&path).exists() { return Some("firefox".to_string()); }
         }
-
         if !localappdata.is_empty() {
-            let edge_path = format!("{}\\Microsoft\\Edge\\User Data", localappdata);
-            if std::path::Path::new(&edge_path).exists() {
-                return Some("edge".to_string());
-            }
+            let path = format!("{}\\Microsoft\\Edge\\User Data", localappdata);
+            if std::path::Path::new(&path).exists() { return Some("edge".to_string()); }
         }
-
         None
     }
 
-    let browser = find_available_browser();
-    let browser_arg = browser.unwrap_or_else(|| "".to_string());
-    
+    let browser_arg = find_available_browser().unwrap_or_else(|| "".to_string());
     let use_cookies = !browser_arg.is_empty() && (browser_arg == "firefox" || browser_arg == "edge");
 
-
-
-
-
     let mut args: Vec<String> = vec![
-        "--ffmpeg-location".to_string(),
-        resource_dir.to_string_lossy().to_string(),
+        "--ffmpeg-location".to_string(), resource_dir.to_string_lossy().to_string(),
         "--no-playlist".to_string(),
         "--write-thumbnail".to_string(),
         "--convert-thumbnails".to_string(), "jpg".to_string(),
         "--progress-template".to_string(), "[download] %(progress._percent_str)s of %(progress._total_bytes_str)s at %(progress._speed_str)s ETA %(progress._eta_str)s".to_string(),
-        "--newline".to_string(),
-        "--no-colors".to_string(),
+        "--newline".to_string(), "--no-colors".to_string(),
     ];
     
     let mut is_audio_only = false;
     let q_str = quality.unwrap_or_else(|| "".to_string());
-    
     match (format_val.as_str(), q_str.as_str()) {
         ("audio", _) | (_, "AUDIO ONLY") => {
             is_audio_only = true;
-            args.push("-f".to_string());
-            args.push("bestaudio/best".to_string());
-            args.push("--extract-audio".to_string());
-            args.push("--audio-format".to_string());
-            args.push("mp3".to_string());
+            args.extend_from_slice(&["-f".to_string(), "bestaudio/best".to_string(), "--extract-audio".to_string(), "--audio-format".to_string(), "mp3".to_string()]);
         },
         (_, q) if q.ends_with("P VIDEO") => {
-            let height_str = q.replace("P VIDEO", "");
-            let format_filter = format!("bestvideo[height<={height_str}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={height_str}]+bestaudio/best");
-            args.push("-f".to_string());
-            args.push(format_filter);
+            let height = q.replace("P VIDEO", "");
+            args.extend_from_slice(&["-f".to_string(), format!("bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={height}]+bestaudio/best")]);
         },
-        _ => {
-            args.push("-f".to_string());
-            args.push("bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best".to_string());
-        }
+        _ => args.extend_from_slice(&["-f".to_string(), "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best".to_string()]),
     }
     
-    if !is_audio_only {
-        args.push("--merge-output-format".to_string());
-        args.push("mp4".to_string());
-    }
-    
-    if use_cookies {
-        args.push("--cookies-from-browser".to_string());
-        args.push(browser_arg);
-    }
-    
-    args.push("-o".to_string());
-    args.push(output_template);
-    args.push(url.clone());
-
-    
+    if !is_audio_only { args.extend_from_slice(&["--merge-output-format".to_string(), "mp4".to_string()]); }
+    if use_cookies { args.extend_from_slice(&["--cookies-from-browser".to_string(), browser_arg]); }
+    args.extend_from_slice(&["-o".to_string(), output_template, url.clone()]);
 
     let tmp_dir = std::env::temp_dir();
-    let stdout_path = tmp_dir.join("ytdlp_stdout.log");
-    let stderr_path = tmp_dir.join("ytdlp_stderr.log");
+    let stdout_path = tmp_dir.join(format!("ytdlp_stdout_{}.log", task_id));
+    let stderr_path = tmp_dir.join(format!("ytdlp_stderr_{}.log", task_id));
 
-    // Truncate/create the log files fresh for this download
-    let stdout_file = std::fs::File::create(&stdout_path)
-        .map_err(|e| format!("Falha ao criar ficheiro de log stdout: {}", e))?;
-    let stderr_file = std::fs::File::create(&stderr_path)
-        .map_err(|e| format!("Falha ao criar ficheiro de log stderr: {}", e))?;
+    let stdout_file = std::fs::File::create(&stdout_path).map_err(|e| e.to_string())?;
+    let stderr_file = std::fs::File::create(&stderr_path).map_err(|e| e.to_string())?;
 
     let mut cmd = Command::new(&ytdlp_path);
     #[cfg(target_os = "windows")]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    cmd.creation_flags(0x08000000);
 
     let child = cmd
         .args(&args)
@@ -196,45 +155,55 @@ async fn start_download(
 
     {
         let mut s = state.lock().unwrap();
-        s.process = Some(child);
-        s.is_paused = false;
-        s.output_filepath = None;
-        s.thumbnail_filepath = None;
+        s.insert(task_id.clone(), DownloadHandle {
+            process: Some(child),
+            is_paused: false,
+            output_filepath: None,
+            thumbnail_filepath: None,
+            output_dir: output_dir.clone(),
+            requested_title: title.unwrap_or_default(),
+            last_progress: Some(DownloadProgress {
+                id: task_id.clone(),
+                percent: 0.0,
+                speed: "—".to_string(),
+                eta: "—".to_string(),
+                status: "preparing".to_string(),
+                filename: String::new(),
+                output_path: String::new(),
+                total_size: String::new(),
+                thumbnail_path: String::new(),
+                error_message: None,
+            }),
+        });
     }
 
     let app_clone = app.clone();
+    let state_clone = Arc::clone(&state);
+    let id_clone = task_id.clone();
 
-    // Stderr reader thread — reads from temp file
+    // Stderr reader
     let stderr_path_clone = stderr_path.clone();
     std::thread::spawn(move || {
-        // Wait briefly for the process to start writing
         std::thread::sleep(std::time::Duration::from_millis(500));
-        let Ok(file) = std::fs::File::open(&stderr_path_clone) else { return; };
-        let reader = BufReader::new(file);
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                println!("[YTDLP-ERR] {}", line);
-            }
+        if let Ok(file) = std::fs::File::open(&stderr_path_clone) {
+            let reader = BufReader::new(file);
+            for line in reader.lines().flatten() { println!("[YTDLP-ERR-{}] {}", id_clone, line); }
         }
     });
 
     let stdout_path_clone = stdout_path.clone();
-    let state_clone = Arc::clone(&state);
+    let id_clone_2 = task_id.clone();
 
     std::thread::spawn(move || {
-        // Wait briefly for yt-dlp to create/start writing to the file
         std::thread::sleep(std::time::Duration::from_millis(300));
-
-        let progress_re = Regex::new(
-            r"\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+\s*\w+)\s+at\s+([\d.]+\s*\w+/s)\s+ETA\s+([\d:]+)"
-        ).unwrap();
-
-        let dest_re     = Regex::new(r"\[download\] Destination: (.+)").unwrap();
+        let progress_re = Regex::new(r"\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+\s*\w+)\s+at\s+([\d.]+\s*\w+/s)\s+ETA\s+([\d:]+)").unwrap();
+        let dest_re = Regex::new(r"\[download\] Destination: (.+)").unwrap();
         let thumb_write_re = Regex::new(r"\[info\] Writing video thumbnail .+ to: (.+)").unwrap();
-        let thumb_conv_re  = Regex::new(r#"\[ThumbnailsConvertor\] Converting thumbnail "(.+)" to (\w+)"#).unwrap();
-        let merger_re  = Regex::new(r#"\[Merger\] Merging formats into "(.+)""#).unwrap();
+        let thumb_conv_re = Regex::new(r#"\[ThumbnailsConvertor\] Converting thumbnail "(.+)" to (\w+)"#).unwrap();
+        let merger_re = Regex::new(r#"\[Merger\] Merging formats into "(.+)""#).unwrap();
 
         let mut last_progress = DownloadProgress {
+            id: id_clone_2.clone(),
             percent: 0.0,
             speed: "—".to_string(),
             eta: "—".to_string(),
@@ -243,319 +212,277 @@ async fn start_download(
             output_path: String::new(),
             total_size: String::new(),
             thumbnail_path: String::new(),
+            error_message: None,
         };
-        let mut stream_index: u32 = 0;  // 0=video, 1=audio, 2+=other
-        let mut max_total_size = String::new(); // keep largest size (video), not audio size
-        let mut last_real_percent: f64 = 0.0;   // track raw percent to detect stream switches
 
-        // Tail-read the stdout file line by line while process runs
-        // Open the file inside the thread after a small delay
         let file = match std::fs::File::open(&stdout_path_clone) {
             Ok(f) => f,
-            Err(e) => { println!("[YTDLP] Erro ao abrir stdout log: {}", e); return; }
+            Err(e) => { println!("[YTDLP-{}] Erro log: {}", id_clone_2, e); return; }
         };
+        
         let mut reader = BufReader::new(file);
-        let mut last_logged_percent: f64 = -15.0; // log at 0% and every 15% after
+        let mut stream_index = 0;
+        let mut max_total_size = String::new();
+        let mut last_real_percent = 0.0;
         let mut last_emit_time = std::time::Instant::now();
-        let mut last_emitted_percent = -1.0_f64;
+        let mut last_emitted_percent = -1.0;
 
         loop {
             loop {
-                let mut raw_bytes: Vec<u8> = Vec::new();
-                match reader.read_until(b'\n', &mut raw_bytes) {
-                    Ok(0) => break, // No new data yet — wait and retry
+                let mut raw = Vec::new();
+                match reader.read_until(b'\n', &mut raw) {
+                    Ok(0) => break,
                     Ok(_) => {
-                        // Lossy UTF-8: safely handles non-UTF-8 bytes from ffmpeg/merge output
-                        let full_line = String::from_utf8_lossy(&raw_bytes);
-                        
-                        for chunk in full_line.split('\r') {
-                            let line = chunk.trim_end_matches('\n').to_string();
-                            if line.is_empty() || line.trim().is_empty() { continue; }
+                        let full = String::from_utf8_lossy(&raw);
+                        for line in full.split('\r').map(|l| l.trim_end_matches('\n').to_string()).filter(|l| !l.is_empty()) {
+                            if !line.starts_with("[download]") { println!("[YTDLP-{}] {}", id_clone_2, line); }
 
-                            // Log non-progress lines only; [download] lines are logged throttled below
-                            if !line.starts_with("[download]") {
-                                println!("[YTDLP] {}", line);
-                            }
-
-                        if let Some(caps) = dest_re.captures(&line) {
-                            let path = caps[1].trim().to_string();
-                            last_progress.output_path = path.clone();
-                            last_progress.filename = std::path::Path::new(&path)
-                                .file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-                            let mut s = state_clone.lock().unwrap();
-                            s.output_filepath = Some(path);
-                        }
-
-                        let lower_line = line.to_lowercase();
-                        if lower_line.contains("[youtube]") || lower_line.contains("[twitter]")
-                            || lower_line.contains("extracting") || lower_line.contains("downloading webpage")
-                            || lower_line.contains("downloading m3u8") || lower_line.contains("downloading guest token")
-                            || lower_line.contains("downloading graphql")
-                        {
-                            last_progress.percent = 0.0;
-                            last_progress.speed = "-".to_string();
-                            last_progress.eta = "-".to_string();
-                            last_progress.status = "preparing".to_string();
-                            let _ = app_clone.emit("download-progress", last_progress.clone());
-                        }
-
-                        // thumb_write: capture initial webp path
-                        if let Some(caps) = thumb_write_re.captures(&line) {
-                            let thumb_path = caps[1].trim().to_string();
-                            if !thumb_path.is_empty() {
-                                last_progress.thumbnail_path = thumb_path.clone();
+                            if let Some(caps) = dest_re.captures(&line) {
+                                let path = caps[1].trim().to_string();
+                                last_progress.output_path = path.clone();
+                                last_progress.filename = std::path::Path::new(&path).file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
                                 let mut s = state_clone.lock().unwrap();
-                                s.thumbnail_filepath = Some(thumb_path);
+                                if let Some(h) = s.get_mut(&id_clone_2) { h.output_filepath = Some(path); }
                             }
-                        }
 
-                        // thumb_convert: derive jpg path from webp path + target extension
-                        if let Some(caps) = thumb_conv_re.captures(&line) {
-                            let src_path = caps[1].trim().to_string();
-                            let target_ext = caps[2].trim().to_string();
-                            let jpg_path = std::path::Path::new(&src_path)
-                                .with_extension(&target_ext)
-                                .to_string_lossy().to_string();
-                            if !jpg_path.is_empty() {
-                                last_progress.thumbnail_path = jpg_path.clone();
+                            if let Some(caps) = thumb_write_re.captures(&line) {
+                                let path = caps[1].trim().to_string();
+                                last_progress.thumbnail_path = path.clone();
                                 let mut s = state_clone.lock().unwrap();
-                                s.thumbnail_filepath = Some(jpg_path);
-                            }
-                        }
-
-                        // merger: update output_path to final merged file
-                        if let Some(caps) = merger_re.captures(&line) {
-                            let merged = caps[1].trim().to_string();
-                            println!("[YTDLP] Merge → '{}'", merged);
-                            last_progress.output_path = merged.clone();
-                            last_progress.filename = std::path::Path::new(&merged)
-                                .file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-                            last_progress.status = "preparing".to_string();
-                            last_progress.percent = 98.0;
-                            let _ = app_clone.emit("download-progress", last_progress.clone());
-                            let mut s = state_clone.lock().unwrap();
-                            s.output_filepath = Some(merged);
-                        }
-
-                        if let Some(caps) = progress_re.captures(&line) {
-                            let real_percent: f64 = caps[1].parse().unwrap_or(0.0);
-                            let total_size = caps[2].trim().to_string();
-                            let speed = caps[3].trim().to_string();
-                            let eta = caps[4].trim().to_string();
-
-                            if real_percent < last_real_percent - 20.0 && last_real_percent > 50.0 {
-                                stream_index += 1;
-                                last_logged_percent = -15.0;
-                                println!("[YTDLP-INFO] Stream {} iniciado (real {:.0}%→{:.0}%)",
-                                    stream_index, last_real_percent, real_percent);
-                            }
-                            last_real_percent = real_percent;
-
-                            // Scale progress for smooth multi-stream UX:
-                            // stream 0 (video): 0–80%, stream 1 (audio): 80–98%, merge: 98–100%
-                            let display_percent = match stream_index {
-                                0 => real_percent * 0.80,
-                                1 => 80.0 + real_percent * 0.18,
-                                _ => 98.0 + real_percent * 0.02,
-                            };
-
-                            // Keep the largest size seen (video stream), not audio size
-                            if stream_index == 0 || total_size.len() > max_total_size.len() {
-                                max_total_size = total_size;
+                                if let Some(h) = s.get_mut(&id_clone_2) { h.thumbnail_filepath = Some(path); }
                             }
 
-                            last_progress.percent = display_percent;
-                            last_progress.speed = speed;
-                            last_progress.eta = eta;
-                            last_progress.total_size = max_total_size.clone();
-                            last_progress.status = "downloading".to_string();
-
-                            // Log only every 15% to keep terminal readable
-                            if real_percent - last_logged_percent >= 15.0 || real_percent >= 99.9 {
-                                println!("[YTDLP-PROGRESS] stream={} {:.1}% (display={:.0}%) of {} at {} ETA {}",
-                                    stream_index, real_percent, display_percent,
-                                    last_progress.total_size, last_progress.speed, last_progress.eta);
-                                last_logged_percent = real_percent;
+                            if let Some(caps) = thumb_conv_re.captures(&line) {
+                                let path = std::path::Path::new(caps[1].trim()).with_extension(caps[2].trim()).to_string_lossy().to_string();
+                                last_progress.thumbnail_path = path.clone();
+                                let mut s = state_clone.lock().unwrap();
+                                if let Some(h) = s.get_mut(&id_clone_2) { h.thumbnail_filepath = Some(path); }
                             }
-                            
-                            // Throttle IPC emission to max 1 per 100ms or 1% change or completion
-                            let now = std::time::Instant::now();
-                            if (display_percent - last_emitted_percent).abs() >= 1.0 
-                                || now.duration_since(last_emit_time).as_millis() >= 100 
-                                || display_percent >= 99.9 
-                            {
-                                let _ = app_clone.emit("download-progress", last_progress.clone());
-                                last_emit_time = now;
-                                last_emitted_percent = display_percent;
-                            }
-                        }
 
-                        if line.to_lowercase().contains("has already been downloaded") {
-                            last_progress.percent = 100.0;
-                            last_progress.status = "skipped".to_string();
-                            let _ = app_clone.emit("download-progress", last_progress.clone());
+                            if let Some(caps) = merger_re.captures(&line) {
+                                let merged = caps[1].trim().to_string();
+                                last_progress.output_path = merged.clone();
+                                last_progress.filename = std::path::Path::new(&merged).file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                                last_progress.status = "preparing".to_string();
+                                last_progress.percent = 98.0;
+                                
+                                if last_emit_time.elapsed().as_millis() > 500 {
+                                    let mut s = state_clone.lock().unwrap();
+                                    if let Some(h) = s.get_mut(&id_clone_2) {
+                                        h.last_progress = Some(last_progress.clone());
+                                        h.output_filepath = Some(merged);
+                                    }
+                                    drop(s);
+                                    let _ = app_clone.emit("download-progress", last_progress.clone());
+                                    last_emit_time = std::time::Instant::now();
+                                }
+                            }
+
+                            if let Some(caps) = progress_re.captures(&line) {
+                                let real: f64 = caps[1].parse().unwrap_or(0.0);
+                                if real < last_real_percent - 20.0 && last_real_percent > 50.0 { stream_index += 1; }
+                                last_real_percent = real;
+                                
+                                let disp = match stream_index {
+                                    0 => real * 0.8,
+                                    1 => 80.0 + (real * 0.18),
+                                    _ => 98.0 + (real * 0.02)
+                                };
+                                last_progress.percent = disp;
+                                
+                                // Respeita o estado oficial do registry
+                                let current_status = {
+                                    let s = state_clone.lock().unwrap();
+                                    s.get(&id_clone_2)
+                                     .map(|h| if h.is_paused { "paused" } else { "downloading" })
+                                     .unwrap_or("downloading")
+                                     .to_string()
+                                };
+                                last_progress.status = current_status;
+
+                                let total = caps[2].trim().to_string();
+                                if stream_index == 0 || total.len() > max_total_size.len() { max_total_size = total; }
+
+                                last_progress.speed = caps[3].trim().to_string();
+                                last_progress.eta = caps[4].trim().to_string();
+                                last_progress.total_size = max_total_size.clone();
+
+                                let now = std::time::Instant::now();
+                                if (disp - last_emitted_percent).abs() >= 1.0 || now.duration_since(last_emit_time).as_millis() >= 100 || disp >= 99.9 {
+                                    // Update state snapshot
+                                    {
+                                        let mut s = state_clone.lock().unwrap();
+                                        if let Some(h) = s.get_mut(&id_clone_2) {
+                                            h.last_progress = Some(last_progress.clone());
+                                        }
+                                    }
+                                    let _ = app_clone.emit("download-progress", last_progress.clone());
+                                    last_emit_time = now; 
+                                    last_emitted_percent = disp;
+                                }
+                            }
                         }
                     }
-                }
-                    Err(_) => break, // Ignore encoding errors and continue
+                    Err(_) => break,
                 }
             }
 
-            // Check if the process has finished
-            let process_done = {
+            let done = {
                 let mut s = state_clone.lock().unwrap();
-                s.process.as_mut().map(|c| matches!(c.try_wait(), Ok(Some(_)))).unwrap_or(true)
+                s.get_mut(&id_clone_2).and_then(|h| h.process.as_mut()).map(|c| matches!(c.try_wait(), Ok(Some(_)))).unwrap_or(true)
             };
-
-            if process_done {
-                // One last read pass to catch any remaining lines
-                let mut raw_bytes = Vec::new();
-                while reader.read_until(b'\n', &mut raw_bytes).unwrap_or(0) > 0 {
-                    let full_line = String::from_utf8_lossy(&raw_bytes);
-                    for chunk in full_line.split('\r') {
-                        let line = chunk.trim_end_matches('\n').to_string();
-                        if !line.is_empty() && !line.trim().is_empty() { 
-                            println!("[YTDLP] {}", line); 
-                        }
-                    }
-                    raw_bytes.clear();
-                }
-                break;
-            }
-
+            if done { break; }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
 
-        // Wait for process to fully exit and get exit code
         let exit_status = {
             let mut s = state_clone.lock().unwrap();
-            s.process.as_mut().and_then(|c| c.wait().ok())
+            s.get_mut(&id_clone_2).and_then(|h| h.process.as_mut()?.wait().ok())
         };
 
         if let Some(status) = exit_status {
-            let exit_code = status.code().unwrap_or(-1);
-            println!("[YTDLP] Processo encerrado. exit_code={} last_status='{}' last_percent={:.1}%",
-                exit_code, last_progress.status, last_progress.percent);
-
-            // Exit code 120 = Python interpreter flush error during shutdown.
-            // Occasional code 1 means minor error on shutdown (e.g. reddit after merge). We consider it Ok if >= 98%.
-            let is_success = status.success() || exit_code == 120 || last_progress.percent >= 98.0;
-
-            if is_success && last_progress.status != "completed" && last_progress.status != "skipped" {
-                last_progress.status = "completed".to_string();
+            let code = status.code().unwrap_or(-1);
+            let ok = status.success() || code == 120 || last_progress.percent >= 98.0;
+            if ok {
+                last_progress.status = "completed".to_string(); 
                 last_progress.percent = 100.0;
-                let _ = app_clone.emit("download-progress", last_progress.clone());
-            } else if !is_success && last_progress.status != "idle" {
+            } else {
                 last_progress.status = "error".to_string();
-                let _ = app_clone.emit("download-progress", last_progress);
+                // Tenta ler o erro do log de stderr
+                if let Ok(err_content) = std::fs::read_to_string(&stderr_path) {
+                    let last_line = err_content.lines().last().unwrap_or("Erro desconhecido no yt-dlp").to_string();
+                    last_progress.error_message = Some(last_line);
+                }
             }
+            
+            // Final update to state
+            {
+                let mut s = state_clone.lock().unwrap();
+                if let Some(h) = s.get_mut(&id_clone_2) {
+                    h.last_progress = Some(last_progress.clone());
+                }
+            }
+
+            let _ = app_clone.emit("download-progress", last_progress);
         }
 
-        let mut s = state_clone.lock().unwrap();
-        s.process = None;
+        // Clean registry and logs
+        {
+            let mut s = state_clone.lock().unwrap();
+            s.remove(&id_clone_2);
+        }
+        let _ = std::fs::remove_file(stdout_path_clone);
+        let _ = std::fs::remove_file(stderr_path);
     });
 
-    Ok(())
+    Ok(task_id)
 }
 
 #[tauri::command]
-fn cancel_download(
+async fn cancel_download(
+    id: String,
     state: tauri::State<'_, SharedDownloadState>,
     app: AppHandle,
 ) -> Result<(), String> {
     
     // ── 1. Coleta info e mata o processo com o lock ──
-    let (output_path, thumb_path) = {
+    let (output_path, thumb_path, output_dir, requested_title) = {
         let mut s = state.lock().unwrap();
+        let Some(mut handle) = s.remove(&id) else {
+            return Ok(()); // Já removido ou finalizado
+        };
 
-        let output_path = s.output_filepath.clone();
-        let thumb_path  = s.thumbnail_filepath.clone();
+        let op = handle.output_filepath.clone();
+        let tp = handle.thumbnail_filepath.clone();
+        let od = handle.output_dir.clone();
+        let rt = handle.requested_title.clone();
 
-        if let Some(ref mut child) = s.process {
+        if let Some(ref mut child) = handle.process {
             let pid = child.id();
             #[cfg(target_os = "windows")]
             kill_process_tree(pid);
             #[cfg(not(target_os = "windows"))]
             let _ = child.kill();
-            println!("[Universal Downloader] Download cancelado — processo yt-dlp (PID {}) e filhos encerrados.", pid);
+            println!("[Universal Downloader] Download {} cancelado — PID {} encerrado.", id, pid);
         }
 
-        s.process = None;
-        s.is_paused = false;
-        s.output_filepath = None;
-        s.thumbnail_filepath = None;
-
-        (output_path, thumb_path)
+        (op, tp, od, rt)
     }; // <── lock liberado aqui
 
-    // ── 2. Cleanup FORA do lock ──
-    std::thread::sleep(std::time::Duration::from_millis(1000));
+    // ── 2. Cleanup ASYNC em background ──
+    let _id_c = id.clone();
+    let app_c = app.clone();
+    
+    tauri::async_runtime::spawn(async move {
+        // Wait inicial para garantir que yt-dlp soltou os arquivos (flush de disco)
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
 
-    if let Some(p) = output_path {
-        let base_path = std::path::PathBuf::from(&p);
+        let search_dir = if let Some(ref p) = output_path {
+            std::path::PathBuf::from(p).parent().map(|p| p.to_path_buf())
+        } else {
+            Some(std::path::PathBuf::from(&output_dir))
+        };
 
-        if let Some(parent) = base_path.parent() {
-            let filename_full = base_path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
+        if let Some(parent) = search_dir {
+            let stem_hint = if let Some(ref p) = output_path {
+                let filename_full = std::path::Path::new(p).file_name()
+                    .unwrap_or_default().to_string_lossy().to_string();
+                let format_re = Regex::new(r"\.f\d+").unwrap();
+                let mut ps = format_re.replace(&filename_full, "").to_string();
+                if let Some(pos) = ps.rfind('.') { ps.truncate(pos); }
+                ps
+            } else {
+                requested_title.clone()
+            };
 
-            let format_re = Regex::new(r"\.f\d+").unwrap();
-            let mut pure_stem = format_re.replace(&filename_full, "").to_string();
-            if let Some(pos) = pure_stem.rfind('.') {
-                pure_stem.truncate(pos);
-            }
+            let normalized_stem = normalize_title(&stem_hint);
 
-            let normalized_stem = normalize_title(&pure_stem);
+            if let Ok(entries) = std::fs::read_dir(&parent) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if !path.is_file() { continue; }
 
-            match std::fs::read_dir(parent) {
-                Err(e) => println!("[Cleanup] ERRO ao ler diretório: {}", e),
-                Ok(entries) => {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if !path.is_file() { continue; }
+                    let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    let normalized_filename = normalize_title(&filename);
 
-                        let filename = path
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string();
+                    // Com normalize_title Agressivo (ASCII), starts_with é altamente confiável
+                    let is_related = normalized_filename.starts_with(&normalized_stem);
+                    
+                    let is_temp = filename.ends_with(".part")
+                        || filename.ends_with(".ytdl")
+                        || filename.ends_with(".jpg")
+                        || filename.ends_with(".webp")
+                        || Regex::new(r"\.f\d+\.\w+$").unwrap().is_match(&filename);
 
-                        let normalized_filename = normalize_title(&filename);
-
-                        let is_related = normalized_filename.starts_with(&normalized_stem);
-                        let is_temp = filename.ends_with(".part")
-                            || filename.ends_with(".ytdl")
-                            || filename.ends_with(".jpg")
-                            || filename.ends_with(".webp")
-                            || Regex::new(r"\.f\d+\.\w+$").unwrap().is_match(&filename);
-
-                        if is_related && is_temp {
-                            wait_and_delete(&path, 8);
+                    if is_related && is_temp {
+                        for _attempt in 0..5 {
+                            if std::fs::remove_file(&path).is_ok() {
+                                println!("[Cleanup] Removido arquivo órfão: {}", filename);
+                                break;
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
                         }
                     }
                 }
             }
         }
-    }
 
-    if let Some(tp) = thumb_path {
-        let tp_path = std::path::Path::new(&tp);
-        if tp_path.exists() {
-            let _ = std::fs::remove_file(tp_path);
+        if let Some(tp) = thumb_path {
+            let _ = std::fs::remove_file(tp);
         }
-    }
 
-    let _ = app.emit("download-progress", DownloadProgress {
-        percent: 0.0,
-        speed: String::new(),
-        eta: String::new(),
-        status: "idle".to_string(),
-        filename: String::new(),
-        output_path: String::new(),
-        total_size: String::new(),
-        thumbnail_path: String::new(),
+        let _ = app_c.emit("download-progress", DownloadProgress {
+            id: _id_c,
+            percent: 0.0,
+            speed: String::new(),
+            eta: String::new(),
+            status: "idle".to_string(),
+            filename: String::new(),
+            output_path: String::new(),
+            total_size: String::new(),
+            thumbnail_path: String::new(),
+            error_message: None,
+        });
     });
 
     Ok(())
@@ -563,26 +490,38 @@ fn cancel_download(
 
 #[tauri::command]
 fn pause_download(
+    id: String,
     state: tauri::State<'_, SharedDownloadState>,
     app: AppHandle,
 ) -> Result<(), String> {
     let mut s = state.lock().unwrap();
-    let Some(ref child) = s.process else {
-        return Err("Nenhum download ativo".to_string());
+    let Some(handle) = s.get_mut(&id) else {
+        return Err("Download não encontrado".to_string());
+    };
+    let Some(ref child) = handle.process else {
+        return Err("Nenhum processo ativo para este download".to_string());
     };
     let pid = child.id();
 
-    if s.is_paused {
+    if handle.is_paused {
         resume_process(pid)?;
-        s.is_paused = false;
-        let _ = app.emit("download-paused", false);
-        println!("[Universal Downloader] Download retomado (PID {}).", pid);
+        handle.is_paused = false;
+        println!("[Universal Downloader] Download {} retomado (PID {}).", id, pid);
     } else {
         suspend_process(pid)?;
-        s.is_paused = true;
-        let _ = app.emit("download-paused", true);
-        println!("[Universal Downloader] Download pausado (PID {}).", pid);
+        handle.is_paused = true;
+        println!("[Universal Downloader] Download {} pausado (PID {}).", id, pid);
     }
+
+    if let Some(mut progress) = handle.last_progress.clone() {
+        progress.status = if handle.is_paused { "paused".to_string() } else { "downloading".to_string() };
+        handle.last_progress = Some(progress.clone());
+        println!("[Universal Downloader] Emitindo status '{}' para {}", progress.status, id);
+        let _ = app.emit("download-progress", progress);
+    } else {
+        println!("[Universal Downloader] WARN: last_progress é None para {}, não emitindo status.", id);
+    }
+
     Ok(())
 }
 
@@ -628,44 +567,22 @@ fn get_process_tree(root_pid: u32) -> Vec<u32> {
     tree
 }
 
-fn wait_and_delete(path: &std::path::Path, retries: u32) -> bool {
-    for attempt in 0..retries {
-        if !path.exists() {
-            return true; // já foi embora
-        }
-        match std::fs::remove_file(path) {
-            Ok(_) => {
-                println!("[Cleanup] Removido: {}", path.display());
-                return true;
-            }
-            Err(e) => {
-                println!("[Cleanup] Tentativa {}/{} falhou para '{}': {}", 
-                    attempt + 1, retries, path.display(), e);
-                std::thread::sleep(std::time::Duration::from_millis(300));
-            }
-        }
-    }
-    println!("[Cleanup] FALHA: não foi possível remover '{}'", path.display());
-    false
-}
 
 // Função auxiliar: normaliza título para comparação
 fn normalize_title(s: &str) -> String {
-    s.chars()
+    s.to_lowercase()
+        .chars()
         .map(|c| {
-            // Substitui qualquer caractere que não seja letra/número/espaço por espaço
-            if c.is_alphanumeric() || c == ' ' {
+            if c.is_ascii_alphanumeric() {
                 c
             } else {
                 ' '
             }
         })
         .collect::<String>()
-        // Colapsa múltiplos espaços em um só e trim
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
-        .to_lowercase()
 }
 
 #[cfg(target_os = "windows")]
@@ -976,7 +893,7 @@ fn check_files_exist(paths: Vec<String>) -> Vec<bool> {
 }
 
 fn main() {
-    let download_state: SharedDownloadState = Arc::new(Mutex::new(DownloadState::default()));
+    let download_state: SharedDownloadState = Arc::new(Mutex::new(HashMap::new()));
 
     tauri::Builder::default()
         .manage(download_state)
