@@ -5,138 +5,21 @@ import {
   Download,
   Settings,
   Gauge,
-  ChevronDown,
-  Pause,
   X,
-  Film,
-  Music,
-  Play,
-  Search,
   Clock,
-  FileDown,
   FolderOpen,
-  HardDrive,
-  Video
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import SettingsScreen from './SettingsScreen';
-
-interface DownloadProgress {
-  id: string;
-  percent: number;
-  speed: string;
-  eta: string;
-  status: 'downloading' | 'paused' | 'completed' | 'error' | 'idle' | 'preparing' | 'oauth_required' | 'skipped';
-  filename: string;
-  output_path: string;
-  total_size: string;
-  thumbnail_path: string;
-  raw?: string;
-  title?: string;
-  thumbnail?: string;
-  thumbnailBase64?: string;
-  error_message?: string;
-  url: string;
-  quality: string;
-  format: string;
-}
-
-export interface DownloadHistoryItem {
-  id: string;
-  url: string;
-  title: string;
-  filename: string;
-  filepath: string;
-  type: 'video' | 'audio' | 'image' | 'other';
-  ext?: string;
-  completedAt: number;
-  sizeLabel: string;
-  thumbnailDataUrl?: string;
-  format: string;
-  quality: string;
-  isMissing?: boolean;
-}
-
-function inferFileType(filename: string): 'video' | 'audio' | 'other' {
-  const videoExts = ['.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.m4v'];
-  const audioExts = ['.mp3', '.flac', '.aac', '.wav', '.ogg', '.m4a', '.opus'];
-  const lower = filename.toLowerCase();
-  if (videoExts.some((ext) => lower.endsWith(ext))) return 'video';
-  if (audioExts.some((ext) => lower.endsWith(ext))) return 'audio';
-  return 'other';
-}
-
-const isEnglish = navigator.language.toLowerCase().startsWith('en');
-function t(en: string, pt: string) {
-  return isEnglish ? en : pt;
-}
-
-function formatRelativeTime(timestamp: number): string {
-  const diff = Date.now() - timestamp;
-  const minutes = Math.floor(diff / 60000);
-  const hours = Math.floor(diff / 3600000);
-  const days = Math.floor(diff / 86400000);
-
-  if (isEnglish) {
-    if (minutes < 1) return 'Just now';
-    if (minutes < 60) return `${minutes} min ago`;
-    if (hours < 24) return `${hours}h ago`;
-    if (days === 1) return 'Yesterday';
-    return `${days} days ago`;
-  }
-
-  if (minutes < 1) return 'Agora mesmo';
-  if (minutes < 60) return `${minutes} min atrás`;
-  if (hours < 24) return `${hours}h atrás`;
-  if (days === 1) return 'Ontem';
-  return `${days} dias atrás`;
-}
-
-function formatYtDlpSize(sizeStr: string): string {
-  if (!sizeStr) return '';
-  const clean = sizeStr.replace('~', '').trim();
-  const match = clean.match(/^([\d.]+)\s*([a-zA-Z]+)?/);
-  if (!match) return sizeStr;
-  
-  const val = parseFloat(match[1]);
-  const unit = (match[2] || '').toUpperCase();
-  
-  let mb = val;
-  if (unit.includes('K')) mb = val / 1024;
-  else if (unit.includes('G')) mb = val * 1024;
-  else if (unit.includes('T')) mb = val * 1024 * 1024;
-  else if (unit === 'B' || unit === 'BYTES') mb = val / 1048576;
-  
-  if (mb >= 1000) {
-    return `${(mb / 1024).toFixed(2).replace(/\.00$/, '')} GB`;
-  } else if (mb >= 0.1) {
-    return `${mb.toFixed(2).replace(/\.00$/, '')} MB`;
-  } else {
-    if (mb === 0) return sizeStr;
-    return `${(mb * 1024).toFixed(0)} KB`;
-  }
-}
-/** 
- * Cleans up yt-dlp filenames by stripping format identifiers, mangled URLs
- * and leftover ID hashes. Keeps the meaningful title + original extension.
- * Example:
- *   "Big Buck Bunny [abc123].mp4" → "Big Buck Bunny"
- */
-function cleanTitle(filename: string | undefined): string {
-  if (!filename) return t('Unknown Title', 'Título Desconhecido');
-  let cleanStr = filename.replace(/\.[a-zA-Z0-9]{2,5}$/i, '');
-  cleanStr = cleanStr.replace(/[.\s-]+(?:fhls|dash|hls|avc|aac|opus|av1|vp9|f\d{3})[-.]?[\w.-]*$/i, '');
-  cleanStr = cleanStr.replace(/\s+-\s+https?:\/\/[^\s]+|https?:\/\/[^\s]+/i, '');
-  cleanStr = cleanStr.replace(/\s+-\s+\S*[a-z]{2,}\.[a-z]{2,}\S*/i, '');
-  cleanStr = cleanStr.replace(/\s+\[[a-zA-Z0-9_-]{6,}\]$/, '');
-  cleanStr = cleanStr.replace(/\s+-\s+[a-zA-Z0-9_-]{8,}$/, '');
-
-  const result = cleanStr.trim();
-  return result.length > 0 ? result : t('Unknown Title', 'Título Desconhecido');
-}
-
-
+import { MediaInput } from './components/MediaInput';
+import { ActiveDownloads } from './components/ActiveDownloads';
+import { HistoryList } from './components/HistoryList';
+import { RecentActivity } from './components/RecentActivity';
+import { useMediaAnalyzer } from './hooks/useMediaAnalyzer';
+import { useDownloadProgress } from './hooks/useDownloadProgress';
+import { DownloadProgress, DownloadHistoryItem, Settings as SettingsType } from './types';
+import { t } from './utils/i18n';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<'search' | 'downloads' | 'settings'>('search');
@@ -160,7 +43,7 @@ export default function App() {
   }, [downloadPath]);
 
   const [notification, setNotification] = useState<{type: 'success' | 'error' | 'warning', message: string, onClick?: () => void} | null>(null);
-  const [settings, setSettings] = useState<{ theme: 'dark' | 'light', soundEnabled: boolean, desktopNotification: boolean, maxDownloads: number }>(() => {
+  const [settings, setSettings] = useState<SettingsType>(() => {
     try {
       const saved = localStorage.getItem('ud_settings');
       if (saved) return JSON.parse(saved);
@@ -170,7 +53,6 @@ export default function App() {
 
   const [downloadHistory, setDownloadHistory] = useState<DownloadHistoryItem[]>([]);
 
-  // Carrega histórico do Backend no boot
   useEffect(() => {
     invoke<DownloadHistoryItem[]>('load_history')
       .then(items => {
@@ -197,7 +79,6 @@ export default function App() {
             
             let newItem = { ...item, isMissing };
             
-            // If path was mangled by encoding, update to actual path found
             if (resolvedPath && resolvedPath !== item.filepath) {
               console.log(`[Sync] Path corrected (Encoding Fix):`, item.filepath, '->', resolvedPath);
               newItem.filepath = resolvedPath;
@@ -217,7 +98,7 @@ export default function App() {
         })
         .catch(err => console.error('[Sync] Failed to verify files:', err));
     }
-  }, [currentScreen, downloadHistory.length]); // Check on screen change or when list size changes 
+  }, [currentScreen, downloadHistory.length, saveHistoryToBackend]);
 
   const [isPaused, setIsPaused] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
@@ -226,14 +107,26 @@ export default function App() {
   const [selectedQuality, setSelectedQuality] = useState<string>('');
   const [isQualityDropdownOpen, setIsQualityDropdownOpen] = useState(false);
   
-  const [videoQualities, setVideoQualities] = useState<string[]>([]);
   const [selectedFormat, setSelectedFormat] = useState<'video' | 'audio'>('video');
-  const [mediaCapabilities, setMediaCapabilities] = useState({ video: true, audio: true });
   
-  const [analyzedMedia, setAnalyzedMedia] = useState<{ title: string, thumbnail: string, qualityLabel: string, type: 'video' | 'audio' } | null>(null);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const { analyzedMedia, isAnalyzing, videoQualities, mediaCapabilities } = useMediaAnalyzer(url);
 
-  // Automatically update quality dropdown options when the format changes
+  const metadataTitleRef = useRef<string>('');
+  const metadataThumbnailRef = useRef<string>('');
+
+  const settingsRef = useRef(settings);
+  useEffect(() => {
+    settingsRef.current = settings;
+    localStorage.setItem('ud_settings', JSON.stringify(settings));
+  }, [settings]);
+
+  useEffect(() => {
+    if (analyzedMedia) {
+      metadataTitleRef.current = analyzedMedia.title;
+      metadataThumbnailRef.current = analyzedMedia.thumbnail;
+    }
+  }, [analyzedMedia]);
+
   useEffect(() => {
     if (selectedFormat === 'audio') {
       setAvailableQualities(['AUDIO ONLY']);
@@ -244,86 +137,6 @@ export default function App() {
     }
   }, [selectedFormat, videoQualities]);
 
-  // Ref to metadata title and thumbnail — avoids stale closure in the download-progress event listener
-  const metadataTitleRef = useRef<string>('');
-  const metadataThumbnailRef = useRef<string>('');
-  
-  const settingsRef = useRef(settings);
-  useEffect(() => {
-    settingsRef.current = settings;
-    localStorage.setItem('ud_settings', JSON.stringify(settings));
-  }, [settings]);
-
-  useEffect(() => {
-    if (!url.startsWith('http')) {
-      setAnalyzedMedia(null);
-      setIsAnalyzing(false);
-      return;
-    }
-    const timeout = setTimeout(async () => {
-      setIsAnalyzing(true);
-      setMediaCapabilities({ video: true, audio: true }); // temporary while loading
-      
-      try {
-        const metadataJson = await invoke<string>('get_video_metadata', { url });
-        const meta = JSON.parse(metadataJson);
-        
-        metadataTitleRef.current = meta.title || '';
-        metadataThumbnailRef.current = meta.thumbnail || '';
-        
-        const hSet = new Set<number>();
-        if (meta.formats) {
-          for (const f of meta.formats) {
-            if (f.vcodec !== 'none' && f.height && f.height >= 360) hSet.add(f.height);
-          }
-        }
-        const heights = Array.from(hSet).sort((a,b) => b-a);
-        const vOptions: string[] = [];
-        heights.forEach(h => vOptions.push(`${h}P VIDEO`));
-        if (vOptions.length === 0 && meta.vcodec === 'none') {
-           // É apenas áudio naturalmente
-        } else if (vOptions.length === 0) {
-           vOptions.push('BEST QUALITY');
-        }
-        
-        setVideoQualities(vOptions);
-        
-        let type: 'video' | 'audio' = vOptions.length === 0 ? 'audio' : 'video';
-        
-        setAnalyzedMedia({ 
-          title: meta.title || '', 
-          thumbnail: meta.thumbnail || '', 
-          qualityLabel: vOptions.length > 0 ? vOptions[0] : 'AUDIO ONLY', 
-          type 
-        });
-        setMediaCapabilities({ video: vOptions.length > 0, audio: true }); 
-        
-        // Se a url for focada em audio puramente, setar como audio automatically
-        if (vOptions.length === 0) {
-            setSelectedFormat('audio');
-        }
-      } catch (err) {
-        console.error('Análise do link falhou:', err);
-        setAnalyzedMedia(null);
-        setMediaCapabilities({ video: true, audio: true }); // Fallback para deixar tentar
-        setVideoQualities(['BEST QUALITY']);
-        
-        const errMsg = String(err).toLowerCase();
-        if (errMsg.includes('failed to resolve') || errMsg.includes('getaddrinfo')) {
-          setNotification({ 
-            type: 'error', 
-            message: t('Network error: Could not reach YouTube. Check your internet.', 'Erro de rede: Não foi possível acessar o YouTube. Verifique sua conexão.') 
-          });
-          setTimeout(() => setNotification(null), 10000);
-        }
-      } finally {
-        setIsAnalyzing(false);
-      }
-    }, 1000); // 1s debounce
-
-    return () => clearTimeout(timeout);
-  }, [url]);
-
   const playNotificationSound = () => {
     if (settingsRef.current.soundEnabled) {
       try {
@@ -333,7 +146,7 @@ export default function App() {
         osc.connect(gain);
         gain.connect(ctx.destination);
         osc.type = 'sine';
-        osc.frequency.setValueAtTime(880, ctx.currentTime); // A5 note
+        osc.frequency.setValueAtTime(880, ctx.currentTime);
         gain.gain.setValueAtTime(0.1, ctx.currentTime);
         osc.start();
         gain.gain.exponentialRampToValueAtTime(0.00001, ctx.currentTime + 0.5);
@@ -360,118 +173,43 @@ export default function App() {
   const speedValue = totalSpeedMiB >= 100 ? totalSpeedMiB.toFixed(0) : totalSpeedMiB.toFixed(1);
   const speedUnit = 'MB/s';
 
-  useEffect(() => {
-    const unlisten = listen<DownloadProgress>('download-progress', (event) => {
-      const p = event.payload;
-      if (!p.id) return;
+  useDownloadProgress({
+    currentProgress,
+    setCurrentProgress,
+    downloadHistory,
+    setDownloadHistory,
+    saveHistoryToBackend,
+    playNotificationSound,
+    setNotification,
+  });
 
-      console.log("[Front] Evento recebido:", p.id, p.status, p.percent + "%");
-      setCurrentProgress(prev => {
-        const existing = prev[p.id];
-        const updated: DownloadProgress = {
-          ...p,
-          thumbnailBase64: existing?.thumbnailBase64 || p.thumbnailBase64,
-          title: metadataTitleRef.current || existing?.title || p.title || p.filename,
-        };
-
-        if (p.status === 'skipped' || p.status === 'completed') {
-           // Convert thumbnail to base64 for history
-           const resolveThumbnail = async () => {
-             if (!p.thumbnail_path && !p.thumbnail) return null;
-             if (p.thumbnailBase64) return p.thumbnailBase64;
-             try { return await invoke<string>('read_thumbnail_as_base64', { path: p.thumbnail_path || '' }); }
-             catch (err) { console.error('History thumb error:', err); return null; }
-           };
- 
-           resolveThumbnail().then(dataUrl => {
-             setTimeout(() => {
-               playNotificationSound();
-               const historyId = btoa(`${p.url}_${p.quality}_${p.format}`).replace(/=/g, '');
-               const newItem: DownloadHistoryItem = {
-                 id: historyId,
-                 url: p.url,
-                 title: cleanTitle(metadataTitleRef.current || p.title || p.filename),
-                 filename: p.filename,
-                 filepath: p.output_path || '',
-                 type: inferFileType(p.filename),
-                 ext: (p.filename.split('.').pop() || '').toUpperCase(),
-                 completedAt: Date.now(),
-                 sizeLabel: formatYtDlpSize(p.total_size || ''),
-                 thumbnailDataUrl: dataUrl || metadataThumbnailRef.current || undefined,
-                 format: p.format,
-                 quality: p.quality,
-               };
- 
-               setDownloadHistory(h => {
-                 const filtered = h.filter(item => item.id !== newItem.id);
-                 const next = [newItem, ...filtered].slice(0, 100);
-                 saveHistoryToBackend(next);
-                 return next;
-               });
- 
-               if (p.status === 'skipped') {
-                 setNotification({type: 'warning', message: t('Already downloaded!', 'Já foi baixado!')});
-                 setTimeout(() => setNotification(null), 10000);
-               }
- 
-               setCurrentProgress(curr => {
-                 const next = { ...curr };
-                 delete next[p.id];
-                 return next;
-               });
-             }, 2000);
-           });
-           return { ...prev, [p.id]: { ...updated, percent: 100 } };
-         }
-
-        if (p.status === 'error' || p.status === 'idle') {
-          if (p.status === 'error') {
-            const lowErr = (p.error_message || '').toLowerCase();
-            if (lowErr.includes('403') || lowErr.includes('sign in') || lowErr.includes('bot') || lowErr.includes('blocked') || lowErr.includes('rate limit')) {
-              playNotificationSound();
-              setNotification({
-                type: 'error', 
-                message: t('YouTube blocked the request. Try again later or use cookies!', 'O YouTube bloqueou a requisição. Tente novamente mais tarde ou use cookies!')
-              });
-              setTimeout(() => setNotification(null), 10000);
-            } else {
-              setNotification({type: 'error', message: t('Download error!', 'Erro no download!')});
-              setTimeout(() => setNotification(null), 5000);
-            }
-          }
-
-          setTimeout(() => {
-            setCurrentProgress(curr => {
-              const next = { ...curr };
-              delete next[p.id];
-              return next;
-            });
-          }, 4000);
-          return { ...prev, [p.id]: updated };
-        }
-
-        return { ...prev, [p.id]: updated };
+  const handleCancelDownload = async (id: string) => {
+    try {
+      await invoke('cancel_download', { id });
+      setCurrentProgress(curr => {
+        const next = { ...curr };
+        delete next[id];
+        return next;
       });
-    });
+    } catch (error) { console.error('Cancel error:', error); }
+  };
 
-    return () => {
-      unlisten.then(fn => fn());
-    };
-  }, []);
+  const handleOpenFolder = async (path: string) => {
+    try { 
+      await invoke('open_folder_natively', { path }); 
+    } catch (error) { 
+      console.error('Erro ao abrir pasta:', error); 
+    }
+  };
 
-  useEffect(() => {
-    (Object.values(currentProgress) as DownloadProgress[]).forEach(p => {
-      if (p.thumbnail_path && !p.thumbnailBase64) {
-        invoke<string>('read_thumbnail_as_base64', { path: p.thumbnail_path })
-          .then(dataUrl => {
-            setCurrentProgress(prev => ({
-              ...prev,
-              [p.id]: { ...prev[p.id], thumbnailBase64: dataUrl }
-            }));
-          }).catch(() => {});
-      }
-    });
-  }, [currentProgress]);
+  const handleRedownload = (item: DownloadHistoryItem) => {
+    setUrl(item.url);
+    setSelectedFormat(item.format as 'video' | 'audio');
+    setSelectedQuality(item.quality);
+    setCurrentScreen('search');
+    setNotification({ type: 'success', message: t('Download settings restored!', 'Configurações restauradas!') });
+    setTimeout(() => setNotification(null), 10000);
+  };
 
   const handleDownloadClick = async () => {
     if (!url) return;
@@ -514,8 +252,6 @@ export default function App() {
         title: titleToUse
       });
 
-      // Remove existing history item with same intent (url + quality + format)
-      // to avoid duplicates and show the active download instead
       const intentId = btoa(`${url}_${selectedQuality || ''}_${selectedFormat}`).replace(/=/g, '');
       setDownloadHistory(h => {
         const next = h.filter(item => item.id !== intentId);
@@ -583,8 +319,8 @@ export default function App() {
           </div>
 
           <nav className="px-4 space-y-1">
-            <button onClick={() => setCurrentScreen('search')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-semibold transition-colors ${currentScreen === 'search' ? 'bg-[#1e1e1e] text-white' : 'text-white/50 hover:text-white hover:bg-white/5'}`}><Search className="w-4 h-4" />SEARCH</button>
-            <button onClick={() => setCurrentScreen('downloads')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-semibold transition-colors ${currentScreen === 'downloads' ? 'bg-[#1e1e1e] text-white' : 'text-white/50 hover:text-white hover:bg-white/5'}`}><Download className="w-4 h-4" />DOWNLOADS</button>
+            <button onClick={() => setCurrentScreen('search')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-semibold transition-colors ${currentScreen === 'search' ? 'bg-[#1e1e1e] text-white' : 'text-white/50 hover:text-white hover:bg-white/5'}`}><Download className="w-4 h-4" />SEARCH</button>
+            <button onClick={() => setCurrentScreen('downloads')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-semibold transition-colors ${currentScreen === 'downloads' ? 'bg-[#1e1e1e] text-white' : 'text-white/50 hover:text-white hover:bg-white/5'}`}><Folder className="w-4 h-4" />DOWNLOADS</button>
             <button onClick={() => setCurrentScreen('settings')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-semibold transition-colors ${currentScreen === 'settings' ? 'bg-[#1e1e1e] text-white' : 'text-white/50 hover:text-white hover:bg-white/5'}`}><Settings className="w-4 h-4" />SETTINGS</button>
           </nav>
         </div>
@@ -642,14 +378,7 @@ export default function App() {
                       if (!cancelingId) return;
                       const tid = cancelingId;
                       setCancelingId(null);
-                      try {
-                        await invoke('cancel_download', { id: tid });
-                        setCurrentProgress(curr => {
-                          const next = { ...curr };
-                          delete next[tid];
-                          return next;
-                        });
-                      } catch (error) { console.error('Cancel error:', error); }
+                      await handleCancelDownload(tid);
                     }}
                     className="px-4 py-2 rounded-lg text-sm font-semibold bg-red-500 hover:bg-red-600 text-white transition-colors"
                   >{t('Yes, Cancel', 'Sim, Cancelar')}</button>
@@ -669,170 +398,44 @@ export default function App() {
                   <p className="text-white/50 text-lg">{t('Enter a URL and download it :)', 'Insira um URL e baixe :)')}</p>
                 </div>
 
-                <div className="space-y-4">
-                  <input 
-                    type="text" 
-                    placeholder={t('Paste your link here (YouTube, TikTok, Reddit...)', 'Cole o seu link aqui (YouTube, TikTok, Reddit...)')}
-                    value={url}
-                    onChange={(e) => {
-                      setUrl(e.target.value);
-                      setAnalyzedMedia(null);
-                      setAvailableQualities([]);
-                      metadataTitleRef.current = '';
-                      metadataThumbnailRef.current = '';
-                    }}
-                    className="w-full bg-[#1a1a1a] border border-white/5 rounded-xl px-6 py-5 text-white placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-white/20 transition-all"
-                  />
+                <MediaInput
+                  url={url}
+                  setUrl={setUrl}
+                  analyzedMedia={analyzedMedia}
+                  isAnalyzing={isAnalyzing}
+                  selectedFormat={selectedFormat}
+                  setSelectedFormat={setSelectedFormat}
+                  selectedQuality={selectedQuality}
+                  setSelectedQuality={setSelectedQuality}
+                  availableQualities={availableQualities}
+                  isQualityDropdownOpen={isQualityDropdownOpen}
+                  setIsQualityDropdownOpen={setIsQualityDropdownOpen}
+                  mediaCapabilities={mediaCapabilities}
+                  currentProgress={currentProgress}
+                  isDownloading={isDownloading}
+                />
 
-                  <AnimatePresence mode="wait">
-                    {analyzedMedia && !(Object.values(currentProgress) as DownloadProgress[]).some(p => p.url === url && p.status !== 'completed') && (
-                      <motion.div 
-                        key="analysis-preview"
-                        initial={{ opacity: 0, y: 10, height: 0 }}
-                        animate={{ opacity: 1, y: 0, height: 'auto' }}
-                        exit={{ opacity: 0, y: 10, height: 0 }}
-                        transition={{ duration: 0.3, ease: "easeOut" }}
-                        className="overflow-hidden"
-                      >
-                        <div className="bg-yellow-400/5 border border-yellow-400/20 rounded-2xl p-5 flex items-center gap-5 mt-2">
-                          <div className="w-14 h-14 bg-white/5 rounded-lg border border-white/10 flex items-center justify-center shrink-0 overflow-hidden relative group">
-                            {analyzedMedia.thumbnail ? <img src={analyzedMedia.thumbnail} alt="thumb" className="w-full h-full object-cover" /> : <Play size={20} className="text-white/30" />}
-                            <div className="absolute inset-0 bg-yellow-400/10 animate-pulse opacity-50" />
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="text-[9px] font-bold tracking-[0.2em] text-yellow-400/70 mb-1 uppercase">{t('Analysis Complete', 'Análise Concluída')}</div>
-                            <p className="text-sm font-bold text-white truncate w-full" title={analyzedMedia.title}>{cleanTitle(analyzedMedia.title)}</p>
-                            <p className="text-[10px] text-white/40 mt-0.5 font-medium">{t('Ready to pull', 'Pronto para baixar')}</p>
-                          </div>
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
+                <button 
+                  onClick={handleDownloadClick} 
+                  disabled={!url || !analyzedMedia || isAnalyzing}
+                  className="w-full bg-[#2a2a2a] hover:bg-[#333] disabled:opacity-50 text-white rounded-xl px-6 py-4 font-bold tracking-wider text-sm transition-colors"
+                >
+                  {isAnalyzing ? t('LOADING...', 'CARREGANDO...') : t('DOWNLOAD', 'DOWNLOAD')}
+                </button>
 
-                  <div className="flex flex-col sm:flex-row gap-4 relative">
-                    <div className="w-full sm:w-32 shrink-0 relative">
-                      <select
-                        value={selectedFormat}
-                        onChange={(e) => setSelectedFormat(e.target.value as any)}
-                        disabled={isAnalyzing}
-                        className="w-full appearance-none bg-[#1a1a1a] border border-white/5 rounded-xl pl-4 pr-10 py-4 text-xs font-bold tracking-wider text-white focus:outline-none cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        <option value="video" disabled={!mediaCapabilities.video}>{t('VIDEO', 'VÍDEO')}</option>
-                        <option value="audio" disabled={!mediaCapabilities.audio}>{t('AUDIO', 'ÁUDIO')}</option>
-                      </select>
-                      <ChevronDown className="w-4 h-4 text-white/30 absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
-                    </div>
+                <ActiveDownloads
+                  currentProgress={currentProgress}
+                  onCancel={(id) => setCancelingId(id)}
+                />
 
-                    <button 
-                      onClick={() => setIsQualityDropdownOpen(!isQualityDropdownOpen)}
-                      disabled={isAnalyzing || availableQualities.length === 0}
-                      className="flex-1 flex items-center justify-between bg-[#1a1a1a] border border-white/5 rounded-xl px-6 py-4 hover:bg-[#222] transition-colors relative"
-                    >
-                      <span className={`text-xs font-bold tracking-wider ${isAnalyzing ? 'animate-pulse text-white/50' : 'text-white'}`}>
-                        {isAnalyzing ? t('ANALYZING MEDIA...', 'ANALISANDO MÍDIA...') : (selectedQuality || t('AWAITING URL...', 'AGUARDANDO LINK...'))}
-                      </span>
-                      <ChevronDown className="w-4 h-4 text-white/30" />
-                    </button>
-
-                    {isQualityDropdownOpen && availableQualities.length > 0 && (
-                      <div className="absolute top-18 left-0 sm:left-34 w-full sm:w-[calc(50%-4rem)] bg-[#1a1a1a] border border-white/5 rounded-xl shadow-xl z-50 overflow-hidden divide-y divide-white/5">
-                        {availableQualities.map(q => (
-                          <button
-                            key={q}
-                            onClick={() => { setSelectedQuality(q); setIsQualityDropdownOpen(false); }}
-                            className={`w-full text-left px-6 py-4 text-xs font-bold tracking-wider hover:bg-[#222] transition-colors ${selectedQuality === q ? 'text-yellow-400 bg-white/5' : 'text-white'}`}
-                          >
-                            {q}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-
-                    <button 
-                      onClick={handleDownloadClick} 
-                      disabled={!url || !analyzedMedia || isAnalyzing}
-                      className="flex-1 bg-[#2a2a2a] hover:bg-[#333] disabled:opacity-50 text-white rounded-xl px-6 py-4 font-bold tracking-wider text-sm transition-colors"
-                    >
-                      {isAnalyzing ? t('LOADING...', 'CARREGANDO...') : t('DOWNLOAD', 'DOWNLOAD')}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="space-y-4">
-                  {(Object.values(currentProgress) as DownloadProgress[]).map((p) => (
-                    <div key={p.id} className="bg-[#171717] border border-white/5 rounded-2xl p-6 flex items-center gap-6">
-                      <div className="w-14 h-14 bg-white/5 rounded-lg border border-white/10 flex items-center justify-center shrink-0 overflow-hidden">
-                        {p.thumbnailBase64 ? <img src={p.thumbnailBase64} alt="thumb" className="w-full h-full object-cover" /> : p.thumbnail ? <img src={p.thumbnail} alt="thumb" className="w-full h-full object-cover" /> : <Play size={20} className="text-white/30" />}
-                      </div>
-                      <div className="flex-1 min-w-0 space-y-3">
-                        <div className="flex justify-between items-end gap-4">
-                          <div className="min-w-0 flex-1">
-                            <div className="text-[10px] font-bold tracking-widest text-white/50 mb-1">{t('ACTIVE DOWNLOAD', 'DOWNLOAD ATIVO')}</div>
-                            <p className="text-sm font-semibold text-white truncate w-full" title={p.title || p.filename}>{p.status === 'preparing' ? t('Preparing...', 'Preparando...') : cleanTitle(p.title || p.filename || t('Video', 'Vídeo'))}</p>
-                            <p className="text-[10px] text-white/30 truncate mt-0.5 font-medium">{p.output_path || p.filename}</p>
-                          </div>
-                          <span className="text-xs font-bold text-yellow-400 tabular-nums shrink-0 pb-0.5">{p.percent > 0 || p.status !== 'preparing' ? `${Math.round(p.percent)}%` : '...'}</span>
-                        </div>
-                        <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden"><div className="h-full bg-yellow-400 rounded-full transition-all duration-300 ease-out" style={{ width: `${p.percent}%` }} /></div>
-                      </div>
-                      <div className="flex items-center gap-4 ml-4 shrink-0">
-                        <button onClick={async () => { try { await invoke('pause_download', { id: p.id }); } catch (e) { console.error('Pause error:', e); } }} className="text-white/50 hover:text-white transition-colors">{p.status === 'paused' ? <Play size={14} className="text-white/60" fill="currentColor" /> : <Pause size={14} className="text-white/60" fill="currentColor" />}</button>
-                        <button onClick={() => setCancelingId(p.id)} className="text-white/50 hover:text-white transition-colors"><X className="w-5 h-5" /></button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="pt-8">
-                  <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-xs font-semibold uppercase tracking-widest text-white/40">{t('Recent Activity', 'Atividade Recente')}</h2>
-                    <button onClick={() => setCurrentScreen('downloads')} className="text-xs font-semibold uppercase tracking-widest text-yellow-400/70 hover:text-yellow-400 transition-colors duration-200">{t('View History', 'Ver Histórico')}</button>
-                  </div>
-                  {downloadHistory.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-10 gap-2">
-                      <div className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center"><Clock size={18} className="text-white/20" /></div>
-                      <p className="text-sm text-white/25">{t('No recent activity', 'Nenhum arquivo baixado recentemente')}</p>
-                    </div>
-                  ) : (
-                    <ul className="space-y-1">
-                      {downloadHistory.map((item) => (
-                        <li key={item.id} className="group flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-white/5 transition-colors duration-150">
-                          <div className="shrink-0 w-12 h-12 rounded-lg overflow-hidden bg-white/5 border border-white/10 flex items-center justify-center cursor-pointer" onClick={() => console.log('Abrir arquivo:', item.filepath)}>
-                            {item.thumbnailDataUrl?.startsWith('data:') || item.thumbnailDataUrl?.startsWith('http') ? <img src={item.thumbnailDataUrl} alt={item.title} className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} /> : { video: <Film size={20} className="text-yellow-400/70" />, audio: <Music size={20} className="text-blue-400/70" /> }[item.type as string] || <FileDown size={20} className="text-white/30" />}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-white/90 truncate">{item.title}</p>
-                            <div className="flex items-center gap-2 mt-0.5">
-                              {item.isMissing ? (
-                                <span className="text-[10px] font-bold text-red-400/80 uppercase tracking-wider">{t('Missing', 'Removido')}</span>
-                              ) : (
-                                <p className="text-xs text-white/35 truncate">{isEnglish ? 'Completed' : 'Concluído'} {formatRelativeTime(item.completedAt)}{item.sizeLabel ? ` • ${item.sizeLabel}` : ''}</p>
-                              )}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-1">
-                            {item.isMissing && (
-                              <button 
-                                onClick={() => {
-                                  setUrl(item.url);
-                                  setSelectedFormat(item.format as any);
-                                  setSelectedQuality(item.quality);
-                                  setCurrentScreen('search');
-                                  setNotification({ type: 'success', message: t('Download settings restored!', 'Configurações restauradas!') });
-                                  setTimeout(() => setNotification(null), 10000);
-                                }}
-                                className="px-3 py-1.5 rounded-lg bg-yellow-400/10 hover:bg-yellow-400/20 text-yellow-500 text-[10px] font-bold transition-all uppercase tracking-wider"
-                              >
-                                {t('Redownload', 'Baixar de Novo')}
-                              </button>
-                            )}
-                            <button onClick={async (e) => { e.stopPropagation(); try { const folder = (item.filepath && item.filepath.length > 3) ? item.filepath.substring(0, item.filepath.lastIndexOf('\\')) : downloadPath; if (folder) await invoke('open_folder_natively', { path: folder }); } catch (error) { console.error('Erro ao abrir pasta:', error); } }} className="shrink-0 w-8 h-8 rounded-lg flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-white/10 transition-all duration-150 cursor-pointer"><FolderOpen size={15} className="text-white/50 hover:text-white/80 transition-colors" /></button>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
+                <RecentActivity
+                  items={downloadHistory}
+                  onItemClick={() => {}}
+                  onRedownload={handleRedownload}
+                  onOpenFolder={handleOpenFolder}
+                  downloadPath={downloadPath}
+                  onViewAll={() => setCurrentScreen('downloads')}
+                />
               </>
             )}
 
@@ -871,68 +474,31 @@ export default function App() {
                   </div>
                   {downloadHistory.length > 0 && (
                     <div className="relative">
-                      <Search className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-white/30" />
                       <input type="text" placeholder={t('Search downloads...', 'Procurar downloads...')} value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full bg-[#1a1a1a] border border-white/5 rounded-xl pl-12 pr-6 py-3 text-white placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-white/20 transition-all" />
                     </div>
                   )}
                 </div>
-                {downloadHistory.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center py-20 gap-4">
-                    <div className="w-16 h-16 rounded-full bg-white/5 flex items-center justify-center"><Download size={24} className="text-white/20" /></div>
-                    <p className="text-white/40">{t('No downloads completed yet. Let\'s go!', 'Nenhum download concluído ainda. Vamos a isso!')}</p>
-                  </div>
-                ) : (
-                  <div className="grid gap-3">
-                    {(() => {
-                      let list = downloadHistory.filter(item => 
-                        item.title.toLowerCase().includes(searchQuery.toLowerCase()) && 
-                        (showArchive ? item.isMissing : !item.isMissing)
-                      );
-                      if (sortOrder === 'oldest') list = [...list].reverse();
-                      return list.map((item) => (
-                        <div key={item.id} className="group flex flex-col sm:flex-row items-center gap-4 p-4 bg-[#1a1a1a] border border-white/5 rounded-2xl hover:bg-[#1e1e1e] transition-colors">
-                          <div className="shrink-0 w-full sm:w-32 h-20 rounded-lg overflow-hidden bg-white/5 border border-white/10 flex items-center justify-center">
-                            {item.thumbnailDataUrl?.startsWith('data:') || item.thumbnailDataUrl?.startsWith('http') ? <img src={item.thumbnailDataUrl} alt={item.title} className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} /> : { video: <Film size={24} className="text-yellow-400/70" />, audio: <Music size={24} className="text-blue-400/70" /> }[item.type as string] || <FileDown size={24} className="text-white/30" />}
-                          </div>
-                          <div className="flex-1 min-w-0 w-full space-y-1">
-                            <h3 className="text-sm font-semibold text-white/90 line-clamp-2" title={item.title}>{item.title}</h3>
-                            <p className="text-[10px] text-white/30 truncate font-medium" title={item.filepath}>{item.filepath ? (item.filepath.includes('\\') ? item.filepath.substring(0, item.filepath.lastIndexOf('\\')) : item.filepath.substring(0, item.filepath.lastIndexOf('/'))) : ''}</p>
-                            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-white/40">
-                              <span className="flex items-center gap-1.5 text-white/60 font-bold tracking-widest uppercase"><span className="w-1.5 h-1.5 rounded-full bg-white/60"></span><Clock size={10} />{formatRelativeTime(item.completedAt)}</span>
-                              {item.sizeLabel && <span className="flex items-center gap-1.5 text-white/60 font-bold tracking-widest uppercase"><span className="w-1.5 h-1.5 rounded-full bg-white/60"></span><HardDrive size={10} />{item.sizeLabel}</span>}
-                              {item.quality && <span className="flex items-center gap-1.5 text-white/60 font-bold tracking-widest uppercase"><span className="w-1.5 h-1.5 rounded-full bg-white/60"></span><Video size={10} />{item.quality.replace('P VIDEO', 'P').replace('P video', 'P')}</span>}
-                              {item.ext && <span className="flex items-center gap-1.5 text-white/60 font-bold tracking-widest uppercase"><span className="w-1.5 h-1.5 rounded-full bg-white/60"></span><FileDown size={10} />{item.ext}</span>}
-                            </div>
-                          </div>
-                          <div className="shrink-0 w-full sm:w-auto flex justify-end gap-2">
-                            {item.isMissing ? (
-                               <button 
-                                onClick={() => {
-                                  setUrl(item.url);
-                                  setSelectedFormat(item.format as any);
-                                  setSelectedQuality(item.quality);
-                                  setCurrentScreen('search');
-                                  setNotification({ type: 'success', message: t('Download settings restored!', 'Configurações restauradas!') });
-                                  setTimeout(() => setNotification(null), 10000);
-                                }}
-                                className="px-4 py-2.5 rounded-lg bg-yellow-400/10 hover:bg-yellow-400/20 text-yellow-500 text-xs font-bold transition-all uppercase tracking-wider"
-                              >
-                                {t('Redownload', 'Baixar de Novo')}
-                              </button>
-                            ) : (
-                              <button onClick={async (e) => { e.stopPropagation(); try { const folder = item.filepath.substring(0, Math.max(item.filepath.lastIndexOf('\\'), item.filepath.lastIndexOf('/'))) || downloadPath || ''; if (folder) await invoke('open_folder_natively', { path: folder }); } catch (error) { console.error('Erro ao abrir pasta:', error); } }} className="flex items-center gap-2 bg-white/5 hover:bg-white/10 px-4 py-2.5 rounded-lg transition-colors text-xs font-semibold text-white/70 hover:text-white"><FolderOpen size={14} /><span>{t('Open Folder', 'Abrir Pasta')}</span></button>
-                            )}
-                          </div>
-                        </div>
-                      ));
-                    })()}
-                  </div>
-                )}
+                <HistoryList
+                  items={downloadHistory}
+                  searchQuery={searchQuery}
+                  setSearchQuery={setSearchQuery}
+                  showArchive={showArchive}
+                  sortOrder={sortOrder}
+                  onItemClick={() => {}}
+                  onRedownload={handleRedownload}
+                  onOpenFolder={handleOpenFolder}
+                  downloadPath={downloadPath}
+                />
               </div>
             )}
 
             {currentScreen === 'settings' && (
-              <SettingsScreen downloadPath={downloadPath} onDownloadPathChange={setDownloadPath} settings={settings} setSettings={setSettings} />
+              <SettingsScreen 
+                downloadPath={downloadPath} 
+                onDownloadPathChange={setDownloadPath} 
+                settings={settings} 
+                setSettings={setSettings} 
+              />
             )}
 
           </div>

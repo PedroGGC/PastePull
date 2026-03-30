@@ -2,8 +2,8 @@
 
 PastePull is a high-performance, universal video and audio downloader built with **Tauri**, **Rust**, and **React**. It abstracts the complexity of `yt-dlp` into a beautiful, buttery-smooth user interface with real-time progress tracking, thumbnail extraction, and download history management.
 
-> 🚀 **V1.0.0 Release:** The application is now ready for production bundling with fully embedded dependencies.
-
+> 🚀 **V1.0.2 Release:** The application is now ready for production bundling with fully embedded dependencies.
+    
 ## Features
 
 - **Universal Support:** Download media from YouTube, Twitter/X, Reddit, TikTok, LinkedIn, and hundreds of other platforms natively supported by `yt-dlp`.
@@ -12,6 +12,9 @@ PastePull is a high-performance, universal video and audio downloader built with
 - **I18n Natively:** The UI senses your system language and automatically adjusts timestamps and interface copy seamlessly between English and Portuguese.
 - **Real-Time Global Speed & Strict Throttling:** Breathtaking display of real-time network speeds, optimized safely under the hood through Tauri IPC debouncing to maintain zero CPU-lag.
 - **Download History:** Visual history tracking with 16:9 thumbnail previews, standardized file size tags (MB/GB), exact download extension identifiers, and one-click "Open Folder" OS-integration. The system retains exactly the latest 100 historical downloads logic.
+- **Missing File Detection:** Automatically detects when downloaded files are deleted from disk and shows a "Missing" status with one-click "Redownload" option.
+- **Persistent History:** Download history is securely backed up to AppData, surviving app reinstalls.
+- **Real-Time Sync:** File status syncs automatically across Search and Downloads screens.
 
 ## Technology Stack
 
