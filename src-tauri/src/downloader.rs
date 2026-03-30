@@ -60,7 +60,7 @@ pub fn build_ytdlp_args(
 
     let mut args: Vec<String> = vec![
         "--ffmpeg-location".to_string(),
-        resource_dir.to_string_lossy().to_string(),
+        resource_dir.join("essentials").to_string_lossy().to_string(),
         "--no-playlist".to_string(),
         "--write-thumbnail".to_string(),
         "--convert-thumbnails".to_string(),

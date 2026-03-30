@@ -34,7 +34,7 @@ pub async fn start_download(
     info!("Starting download: {} with ID {}", url, task_id);
 
     let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
-    let ytdlp_path = resource_dir.join("yt-dlp.exe");
+    let ytdlp_path = resource_dir.join("essentials").join("yt-dlp.exe");
 
     if !ytdlp_path.exists() {
         return Err(format!("yt-dlp.exe não encontrado: {}", ytdlp_path.display()));
@@ -299,7 +299,7 @@ pub async fn select_download_folder(app: AppHandle) -> Result<String, String> {
 #[tauri::command]
 pub async fn get_video_metadata(app: AppHandle, url: String) -> Result<String, String> {
     let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
-    let ytdlp_path = resource_dir.join("yt-dlp.exe");
+    let ytdlp_path = resource_dir.join("essentials").join("yt-dlp.exe");
 
     tokio::task::spawn_blocking(move || {
         let mut cmd = std::process::Command::new(&ytdlp_path);
