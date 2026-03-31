@@ -8,6 +8,7 @@ mod downloader;
 mod process;
 mod types;
 mod utils;
+mod watcher;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -19,6 +20,7 @@ use commands::{
     open_folder_natively, pause_download, read_thumbnail_as_base64, resolve_paths, save_history,
     scan_download_folder, select_download_folder, start_download, find_file_by_title,
 };
+use watcher::{check_file_exists, check_files_in_folder, start_file_watcher};
 use types::SharedDownloadState;
 
 fn main() {
@@ -49,7 +51,10 @@ fn main() {
             move_to_trash,
             scan_download_folder,
             save_history,
-            load_history
+            load_history,
+            check_file_exists,
+            check_files_in_folder,
+            start_file_watcher
         ])
         .run(tauri::generate_context!())
         .expect("Erro ao iniciar o aplicativo Tauri");

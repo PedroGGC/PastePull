@@ -68,6 +68,13 @@ export default function App() {
     invoke<DownloadHistoryItem[]>('load_history')
       .then(items => {
         setDownloadHistory(items);
+        
+        const savedPath = localStorage.getItem('ud_download_path');
+        if (savedPath) {
+          invoke('start_file_watcher', { path: savedPath })
+            .then(() => console.log('[FileWatcher] Started'))
+            .catch((err) => console.error('[FileWatcher] Failed to start:', err));
+        }
       })
       .catch(err => console.error('[History] Load failed:', err));
   }, []);
@@ -75,6 +82,44 @@ export default function App() {
   const saveHistoryToBackend = useCallback(async (items: DownloadHistoryItem[]) => {
     try { await invoke('save_history', { items }); }
     catch (err) { console.error('[History] Save failed:', err); }
+  }, []);
+
+  const saveHistoryRef = useRef(saveHistoryToBackend);
+  useEffect(() => {
+    saveHistoryRef.current = saveHistoryToBackend;
+  }, [saveHistoryToBackend]);
+
+  useEffect(() => {
+    const unlisten = listen<{ filepath: string; action: string }>('file-changed', (event) => {
+      const { filepath, action } = event.payload;
+      console.log('[FileWatcher] Evento recebido:', action, filepath);
+
+      setDownloadHistory((prev) => {
+        const updated = prev.map((item) => {
+          if (item.filepath && (item.filepath === filepath || filepath.startsWith(item.filepath))) {
+            const newIsMissing = action === 'deleted';
+            if (item.isMissing !== newIsMissing) {
+              console.log(`[FileWatcher] Atualizando ${item.title}: isMissing ${item.isMissing} -> ${newIsMissing}`);
+              return { ...item, isMissing: newIsMissing };
+            }
+          }
+          return item;
+        });
+
+        const changed = updated.some((item, idx) => 
+          prev[idx] && (prev[idx].isMissing !== item.isMissing)
+        );
+        
+        if (changed) {
+          saveHistoryRef.current(updated);
+        }
+        return updated;
+      });
+    });
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
   }, []);
 
   useEffect(() => {
@@ -230,6 +275,15 @@ export default function App() {
       }
     }
     setIsDeleting(false);
+    
+    setDownloadHistory((prev) => {
+      const updated = prev.map((item) => 
+        items.some((i) => i.id === item.id) ? { ...item, isMissing: true } : item
+      );
+      saveHistoryRef.current(updated);
+      return updated;
+    });
+    
     setNotification({ type: 'success', message: t(`${items.length} item(s) moved to trash`, `${items.length} item(s) movido(s) para a lixeira`) });
     setTimeout(() => setNotification(null), 5000);
   }, [setNotification]);
