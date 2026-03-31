@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { Film, Music, FileDown, FolderOpen, Clock, HardDrive, Video, Search } from 'lucide-react';
+import { Film, Music, FileDown, FolderOpen, Clock, HardDrive, Video, Search, Trash2, CheckSquare, Square } from 'lucide-react';
 import { DownloadHistoryItem } from '../types';
 import { formatRelativeTime, inferFileType } from '../utils/formatters';
 import { isEnglish, t } from '../utils/i18n';
@@ -14,6 +14,9 @@ interface HistoryListProps {
   onRedownload: (item: DownloadHistoryItem) => void;
   onOpenFolder: (filepath: string) => void;
   downloadPath: string;
+  selectedItems: string[];
+  setSelectedItems: (ids: string[]) => void;
+  onDelete: (item: DownloadHistoryItem, mode: 'trash' | 'history') => void;
 }
 
 export function HistoryList({
@@ -26,7 +29,11 @@ export function HistoryList({
   onRedownload,
   onOpenFolder,
   downloadPath,
+  selectedItems,
+  setSelectedItems,
+  onDelete,
 }: HistoryListProps) {
+  const selectionMode = selectedItems.length > 0;
   const filteredItems = items
     .filter((item) => 
       item.title.toLowerCase().includes(searchQuery.toLowerCase()) && 
@@ -68,10 +75,26 @@ export function HistoryList({
           {filteredItems.map((item) => (
             <div 
               key={item.id} 
-              className="group flex flex-col sm:flex-row items-center gap-4 p-4 bg-[#1a1a1a] border border-white/5 rounded-2xl hover:bg-[#1e1e1e] transition-colors"
+              className={`group flex flex-col sm:flex-row items-center gap-4 p-4 bg-[#1a1a1a] border border-white/5 rounded-2xl hover:bg-[#1e1e1e] transition-colors ${selectionMode ? 'cursor-default' : ''}`}
+              onClick={() => !selectionMode && onItemClick(item)}
             >
-              <div className="shrink-0 w-full sm:w-32 h-20 rounded-lg overflow-hidden bg-white/5 border border-white/10 flex items-center justify-center">
-                {renderThumbnail(item)}
+              <div className="shrink-0 flex items-center gap-3">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (selectedItems.includes(item.id)) {
+                      setSelectedItems(selectedItems.filter(id => id !== item.id));
+                    } else {
+                      setSelectedItems([...selectedItems, item.id]);
+                    }
+                  }}
+                  className="text-white/40 hover:text-white transition-colors"
+                >
+                  {selectedItems.includes(item.id) ? <CheckSquare size={20} /> : <Square size={20} />}
+                </button>
+                <div className="w-full sm:w-32 h-20 rounded-lg overflow-hidden bg-white/5 border border-white/10 flex items-center justify-center">
+                  {renderThumbnail(item)}
+                </div>
               </div>
               <div className="flex-1 min-w-0 w-full space-y-1">
                 <h3 className="text-sm font-semibold text-white/90 line-clamp-2" title={item.title}>
@@ -116,7 +139,7 @@ export function HistoryList({
               <div className="shrink-0 w-full sm:w-auto flex justify-end gap-2">
                 {item.isMissing ? (
                   <button 
-                    onClick={() => onRedownload(item)}
+                    onClick={(e) => { e.stopPropagation(); onRedownload(item); }}
                     className="px-4 py-2.5 rounded-lg bg-yellow-400/10 hover:bg-yellow-400/20 text-yellow-500 text-xs font-bold transition-all uppercase tracking-wider"
                   >
                     {t('Redownload', 'Baixar de Novo')}
@@ -134,6 +157,16 @@ export function HistoryList({
                     <span>{t('Open Folder', 'Abrir Pasta')}</span>
                   </button>
                 )}
+                <button 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDelete(item, item.isMissing ? 'history' : 'trash');
+                  }}
+                  className="p-2.5 rounded-lg text-white/30 hover:text-red-400 hover:bg-red-400/10 transition-colors"
+                  title={item.isMissing ? t('Remove from history', 'Remover do histórico') : t('Move to trash', 'Mover para lixeira')}
+                >
+                  <Trash2 size={16} />
+                </button>
               </div>
             </div>
           ))}

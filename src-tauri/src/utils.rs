@@ -1,6 +1,16 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 
+pub fn decode_bytes(raw: &[u8]) -> String {
+    match std::str::from_utf8(raw) {
+        Ok(s) => s.to_string(),
+        Err(_) => {
+            let (decoded, _, _) = encoding_rs::WINDOWS_1252.decode(raw);
+            decoded.into_owned()
+        }
+    }
+}
+
 pub static NORMALIZE_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"[^\w\s]").unwrap()
 });

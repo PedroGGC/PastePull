@@ -77,7 +77,14 @@ export function useDownloadProgress({
 
               setDownloadHistory((h) => {
                 const filtered = h.filter((item) => item.id !== newItem.id);
-                const next = [newItem, ...filtered].slice(0, 100);
+                
+                const downloads = filtered.filter(item => !item.isMissing);
+                const history = filtered.filter(item => item.isMissing);
+                
+                const limitedDownloads = downloads.slice(0, 100);
+                const limitedHistory = history.slice(0, 50);
+                
+                const next = [newItem, ...limitedDownloads, ...limitedHistory];
                 saveHistoryToBackend(next);
                 return next;
               });

@@ -9,7 +9,6 @@ use crate::downloader::{build_ytdlp_args, spawn_download_thread};
 use crate::process::{kill_process_tree, resume_process, suspend_process};
 use crate::types::{DownloadProgress, DownloadHandle, HistoryEntry, SharedDownloadState};
 use crate::utils::{ascii_alphanum, normalize_title};
-use std::os::windows::process::CommandExt;
 use tauri_plugin_dialog::DialogExt;
 
 #[tauri::command]
@@ -51,7 +50,9 @@ pub async fn start_download(
 
     let mut cmd = Command::new(&ytdlp_path);
     #[cfg(target_os = "windows")]
-    cmd.creation_flags(0x08000000);
+    use std::os::windows::process::CommandExt;
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
 
     let child = cmd
         .args(&args)
@@ -304,7 +305,9 @@ pub async fn get_video_metadata(app: AppHandle, url: String) -> Result<String, S
     tokio::task::spawn_blocking(move || {
         let mut cmd = std::process::Command::new(&ytdlp_path);
         #[cfg(target_os = "windows")]
-        cmd.creation_flags(0x08000000);
+        use std::os::windows::process::CommandExt;
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
 
         let output = cmd
             .arg("--dump-json")
@@ -453,6 +456,8 @@ pub fn check_files_exist(paths: Vec<String>) -> Vec<bool> {
 
 #[tauri::command]
 pub fn resolve_paths(paths: Vec<String>) -> Vec<Option<String>> {
+    use crate::utils::ascii_alphanum;
+    
     paths.into_iter()
         .map(|p| {
             let path = PathBuf::from(&p);
@@ -519,7 +524,6 @@ pub fn resolve_paths(paths: Vec<String>) -> Vec<Option<String>> {
                             }
                         }
                         if let Some((_, found_path)) = best_match {
-                            debug!("Fuzzy matched: {} -> {}", p, found_path);
                             return Some(found_path);
                         }
                     }
@@ -548,7 +552,6 @@ pub fn resolve_paths(paths: Vec<String>) -> Vec<Option<String>> {
                                     "mp4", "mkv", "avi", "mov", "webm", "m4v", "mp3", "flac", "aac", "wav", "ogg", "m4a", "opus",
                                 ];
                                 if valid_exts.contains(&ext.as_str()) {
-                                    debug!("Prefix fallback: {} -> {}", p, entry_path.display());
                                     return Some(entry_path.to_string_lossy().to_string());
                                 }
                             }
@@ -663,4 +666,62 @@ pub fn load_history(app: AppHandle) -> Result<Vec<HistoryEntry>, String> {
     let json = std::fs::read_to_string(history_file).map_err(|e| e.to_string())?;
     let items: Vec<HistoryEntry> = serde_json::from_str(&json).map_err(|e| e.to_string())?;
     Ok(items)
+}
+
+#[tauri::command]
+pub fn move_to_trash(filepath: String) -> Result<(), String> {
+    let path = PathBuf::from(&filepath);
+    if !path.exists() {
+        return Err("Arquivo não encontrado".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        
+        // Mover arquivo principal
+        let output = Command::new("powershell")
+            .args([
+                "-Command",
+                &format!(
+                    "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('{}', 'OnlyErrorDialogs', 'SendToRecycleBin')",
+                    filepath.replace("'", "''")
+                ),
+            ])
+            .output()
+            .map_err(|e| e.to_string())?;
+
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("Erro ao mover para lixeira: {}", err));
+        }
+
+        // Derivar e mover thumbnail (mesmo nome, extensão .jpg)
+        if let Some(parent) = path.parent() {
+            if let Some(stem) = path.file_stem() {
+                let thumb_filename = format!("{}.jpg", stem.to_string_lossy());
+                let thumb_path = parent.join(&thumb_filename);
+                
+                if thumb_path.exists() {
+                    let thumb_str = thumb_path.to_string_lossy().to_string();
+                    let _ = Command::new("powershell")
+                        .args([
+                            "-Command",
+                            &format!(
+                                "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('{}', 'OnlyErrorDialogs', 'SendToRecycleBin')",
+                                thumb_str.replace("'", "''")
+                            ),
+                        ])
+                        .output();
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        return Err("Esta funcionalidade só está disponível no Windows".to_string());
+    }
+
+    Ok(())
 }

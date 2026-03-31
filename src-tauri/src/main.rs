@@ -15,8 +15,8 @@ use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use commands::{
-    cancel_download, check_files_exist, get_video_metadata, load_history, open_folder_natively,
-    pause_download, read_thumbnail_as_base64, resolve_paths, save_history,
+    cancel_download, check_files_exist, get_video_metadata, load_history, move_to_trash,
+    open_folder_natively, pause_download, read_thumbnail_as_base64, resolve_paths, save_history,
     scan_download_folder, select_download_folder, start_download, find_file_by_title,
 };
 use types::SharedDownloadState;
@@ -46,6 +46,7 @@ fn main() {
             read_thumbnail_as_base64,
             check_files_exist,
             resolve_paths,
+            move_to_trash,
             scan_download_folder,
             save_history,
             load_history

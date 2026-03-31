@@ -8,6 +8,9 @@ import {
   X,
   Clock,
   FolderOpen,
+  Trash2,
+  CheckSquare,
+  Square,
 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -37,6 +40,14 @@ export default function App() {
       return '';
     }
   });
+
+  const [selectedItems, setSelectedItems] = useState<string[]>([]);
+  const [deleteModal, setDeleteModal] = useState<{
+    show: boolean;
+    items: DownloadHistoryItem[];
+    mode: 'trash' | 'history';
+  } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     localStorage.setItem('ud_download_path', downloadPath);
@@ -80,14 +91,12 @@ export default function App() {
             let newItem = { ...item, isMissing };
             
             if (resolvedPath && resolvedPath !== item.filepath) {
-              console.log(`[Sync] Path corrected (Encoding Fix):`, item.filepath, '->', resolvedPath);
               newItem.filepath = resolvedPath;
               hasChanges = true;
             }
 
             if (item.isMissing !== isMissing) {
-                console.log(`[Sync] File ${isMissing ? 'Missing' : 'Restored'}:`, item.title, item.filepath);
-                hasChanges = true;
+              hasChanges = true;
             }
             return newItem;
           });
@@ -96,7 +105,7 @@ export default function App() {
             saveHistoryToBackend(updatedHistory);
           }
         })
-        .catch(err => console.error('[Sync] Failed to verify files:', err));
+        .catch(() => {});
     }
   }, [currentScreen, downloadHistory.length, saveHistoryToBackend]);
 
@@ -211,6 +220,28 @@ export default function App() {
     setTimeout(() => setNotification(null), 10000);
   };
 
+  const handleMoveToTrash = useCallback(async (items: DownloadHistoryItem[]) => {
+    setIsDeleting(true);
+    for (const item of items) {
+      try {
+        await invoke('move_to_trash', { filepath: item.filepath });
+      } catch (err) {
+        console.error('Error moving to trash:', err);
+      }
+    }
+    setIsDeleting(false);
+    setNotification({ type: 'success', message: t(`${items.length} item(s) moved to trash`, `${items.length} item(s) movido(s) para a lixeira`) });
+    setTimeout(() => setNotification(null), 5000);
+  }, [setNotification]);
+
+  const handleDeleteFromHistory = useCallback((items: DownloadHistoryItem[]) => {
+    const newHistory = downloadHistory.filter(h => !items.some(i => i.id === h.id));
+    setDownloadHistory(newHistory);
+    saveHistoryToBackend(newHistory);
+    setNotification({ type: 'success', message: t(`${items.length} item(s) removed from history`, `${items.length} item(s) removido(s) do histórico`) });
+    setTimeout(() => setNotification(null), 5000);
+  }, [downloadHistory, saveHistoryToBackend, setNotification]);
+
   const handleDownloadClick = async () => {
     if (!url) return;
     const activeCount = Object.values(currentProgress).filter((p: DownloadProgress) => !['completed', 'error', 'skipped'].includes(p.status)).length;
@@ -319,9 +350,9 @@ export default function App() {
           </div>
 
           <nav className="px-4 space-y-1">
-            <button onClick={() => setCurrentScreen('search')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-semibold transition-colors ${currentScreen === 'search' ? 'bg-[#1e1e1e] text-white' : 'text-white/50 hover:text-white hover:bg-white/5'}`}><Download className="w-4 h-4" />SEARCH</button>
-            <button onClick={() => setCurrentScreen('downloads')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-semibold transition-colors ${currentScreen === 'downloads' ? 'bg-[#1e1e1e] text-white' : 'text-white/50 hover:text-white hover:bg-white/5'}`}><Folder className="w-4 h-4" />DOWNLOADS</button>
-            <button onClick={() => setCurrentScreen('settings')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-semibold transition-colors ${currentScreen === 'settings' ? 'bg-[#1e1e1e] text-white' : 'text-white/50 hover:text-white hover:bg-white/5'}`}><Settings className="w-4 h-4" />SETTINGS</button>
+            <button onClick={() => setCurrentScreen('search')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-semibold transition-colors ${currentScreen === 'search' ? 'bg-[#1e1e1e] text-white' : 'text-white/50 hover:text-white hover:bg-white/5'}`}><Download className="w-4 h-4" />{t('SEARCH', 'BUSCA')}</button>
+            <button onClick={() => setCurrentScreen('downloads')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-semibold transition-colors ${currentScreen === 'downloads' ? 'bg-[#1e1e1e] text-white' : 'text-white/50 hover:text-white hover:bg-white/5'}`}><Folder className="w-4 h-4" />{t('DOWNLOADS', 'DOWNLOADS')}</button>
+            <button onClick={() => setCurrentScreen('settings')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-semibold transition-colors ${currentScreen === 'settings' ? 'bg-[#1e1e1e] text-white' : 'text-white/50 hover:text-white hover:bg-white/5'}`}><Settings className="w-4 h-4" />{t('SETTINGS', 'CONFIGURAÇÕES')}</button>
           </nav>
         </div>
 
@@ -342,7 +373,11 @@ export default function App() {
       <main className="flex-1 flex flex-col overflow-hidden">
         <header className="flex items-center justify-between p-8">
           <div className="flex items-center gap-2">
-            <h1 className="text-lg font-semibold capitalize">{currentScreen}</h1>
+            <h1 className="text-lg font-semibold capitalize">
+              {currentScreen === 'search' ? t('Search', 'Busca') : 
+               currentScreen === 'downloads' ? t('Downloads', 'Downloads') : 
+               t('Settings', 'Configurações')}
+            </h1>
           </div>
         </header>
 
@@ -382,6 +417,62 @@ export default function App() {
                     }}
                     className="px-4 py-2 rounded-lg text-sm font-semibold bg-red-500 hover:bg-red-600 text-white transition-colors"
                   >{t('Yes, Cancel', 'Sim, Cancelar')}</button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {deleteModal?.show && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+              <motion.div initial={{ opacity: 0, scale: 0.95, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.95, y: 10 }} className="bg-[#1a1a1a] border border-white/10 p-6 rounded-2xl shadow-2xl max-w-sm w-full">
+                <div className="flex items-center gap-3 text-red-400 mb-4">
+                  <div className="w-10 h-10 rounded-full bg-red-400/10 flex items-center justify-center"><Trash2 size={20} /></div>
+                  <h3 className="text-lg font-bold text-white">
+                    {deleteModal.mode === 'trash' 
+                      ? t('Move to trash?', 'Mover para lixeira?') 
+                      : t('Remove from history?', 'Remover do histórico?')}
+                  </h3>
+                </div>
+                <p className="text-white/60 text-sm mb-6">
+                  {deleteModal.mode === 'trash'
+                    ? t(`Are you sure you want to move ${deleteModal.items.length} item(s) to trash?`, `Tem certeza que deseja mover ${deleteModal.items.length} item(s) para a lixeira?`)
+                    : t(`Are you sure you want to remove ${deleteModal.items.length} item(s) from history?`, `Tem certeza que deseja remover ${deleteModal.items.length} item(s) do histórico?`)}
+                </p>
+                <div className="flex gap-3 justify-end">
+                  <button 
+                    onClick={() => setDeleteModal(null)} 
+                    disabled={isDeleting}
+                    className="px-4 py-2 rounded-lg text-sm font-semibold text-white/70 hover:text-white hover:bg-white/5 transition-colors disabled:opacity-50"
+                  >
+                    {t('Cancel', 'Cancelar')}
+                  </button>
+                  <button 
+                    onClick={() => {
+                      const items = deleteModal.items;
+                      const mode = deleteModal.mode;
+                      setDeleteModal(null);
+                      setSelectedItems([]);
+                      
+                      if (mode === 'trash') {
+                        handleMoveToTrash(items);
+                      } else {
+                        handleDeleteFromHistory(items);
+                      }
+                    }}
+                    disabled={isDeleting}
+                    className="px-4 py-2 rounded-lg text-sm font-semibold bg-red-500 hover:bg-red-600 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                  >
+                    {isDeleting ? (
+                      <>
+                        <span className="animate-spin">⟳</span>
+                        {t('Moving...', 'Movendo...')}
+                      </>
+                    ) : (
+                      deleteModal.mode === 'trash' ? t('Move to trash', 'Mover para lixeira') : t('Remove', 'Remover')
+                    )}
+                  </button>
                 </div>
               </motion.div>
             </div>
@@ -442,8 +533,7 @@ export default function App() {
             {currentScreen === 'downloads' && (
               <div className="space-y-6">
                 <div className="flex flex-col gap-4 border-b border-white/5 pb-6">
-                  <div className="flex items-center justify-between">
-                    <h2 className="text-2xl font-bold tracking-tight text-white">Downloads</h2>
+                  <div className="flex items-center justify-end">
                     <div className="flex items-center gap-3">
                       {downloadHistory.length > 0 && (
                         <div className="flex items-center bg-white/5 p-1 rounded-xl border border-white/5">
@@ -469,7 +559,32 @@ export default function App() {
                           {sortOrder === 'newest' ? t('Newest', 'Mais Novos') : t('Oldest', 'Mais Antigos')}
                         </button>
                       )}
-                      {downloadHistory.length > 0 && <span className="bg-white/10 text-white/70 text-xs font-bold px-3 py-1 rounded-full">{downloadHistory.length} {downloadHistory.length === 1 ? t('file', 'arquivo') : t('files', 'arquivos')}</span>}
+                      {downloadHistory.length > 0 && (
+                        <div className="flex items-center gap-2">
+                          <button 
+                            onClick={() => {
+                              if (selectedItems.length > 0) {
+                                setSelectedItems([]);
+                              } else {
+                                const currentItems = showArchive 
+                                  ? downloadHistory.filter(i => i.isMissing)
+                                  : downloadHistory.filter(i => !i.isMissing);
+                                setSelectedItems(currentItems.map(i => i.id));
+                              }
+                            }}
+                            className="flex items-center gap-1.5 bg-white/5 hover:bg-white/10 text-white/70 px-3 py-1.5 rounded-lg transition-colors text-xs font-semibold uppercase tracking-widest cursor-pointer"
+                          >
+                            {selectedItems.length > 0 ? <CheckSquare size={14} /> : <Square size={14} />}
+                            <Trash2 size={14} />
+                          </button>
+                          <span className="bg-white/10 text-white/70 text-xs font-bold px-3 py-1 rounded-full">
+                            {showArchive 
+                              ? downloadHistory.filter(i => i.isMissing).length 
+                              : downloadHistory.filter(i => !i.isMissing).length
+                            } {t('file', 'arquivo')}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
                   {downloadHistory.length > 0 && (
@@ -478,6 +593,32 @@ export default function App() {
                     </div>
                   )}
                 </div>
+                  {selectedItems.length > 0 && (
+                    <div className="flex items-center justify-between bg-[#1a1a1a] border border-white/10 p-4 rounded-xl">
+                      <span className="text-sm font-semibold text-white">{selectedItems.length} {t('selected', 'selecionado(s)')}</span>
+                    <div className="flex items-center gap-3">
+                      <button 
+                        onClick={() => setSelectedItems([])}
+                        className="px-4 py-2 rounded-lg text-sm font-semibold text-white/70 hover:text-white hover:bg-white/5 transition-colors"
+                      >
+                        {t('Cancel', 'Cancelar')}
+                      </button>
+                      <button 
+                        onClick={() => {
+                          const currentItems = showArchive 
+                            ? downloadHistory.filter(i => i.isMissing)
+                            : downloadHistory.filter(i => !i.isMissing);
+                          const itemsToDelete = currentItems.filter(i => selectedItems.includes(i.id));
+                          setDeleteModal({ show: true, items: itemsToDelete, mode: showArchive ? 'history' : 'trash' });
+                        }}
+                        className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold bg-red-500 hover:bg-red-600 text-white transition-colors"
+                      >
+                        <Trash2 size={16} />
+                        {showArchive ? t('Remove', 'Remover') : t('Move to trash', 'Mover para lixeira')}
+                      </button>
+                    </div>
+                  </div>
+                )}
                 <HistoryList
                   items={downloadHistory}
                   searchQuery={searchQuery}
@@ -488,6 +629,9 @@ export default function App() {
                   onRedownload={handleRedownload}
                   onOpenFolder={handleOpenFolder}
                   downloadPath={downloadPath}
+                  selectedItems={selectedItems}
+                  setSelectedItems={setSelectedItems}
+                  onDelete={(item, mode) => setDeleteModal({ show: true, items: [item], mode })}
                 />
               </div>
             )}

@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 use crate::types::SharedDownloadState;
 use crate::utils::find_available_browser;
@@ -60,7 +60,7 @@ pub fn build_ytdlp_args(
 
     let mut args: Vec<String> = vec![
         "--ffmpeg-location".to_string(),
-        resource_dir.join("essentials").to_string_lossy().to_string(),
+        resource_dir.to_string_lossy().to_string(),
         "--no-playlist".to_string(),
         "--write-thumbnail".to_string(),
         "--convert-thumbnails".to_string(),
@@ -84,23 +84,34 @@ pub fn build_ytdlp_args(
                 "--audio-format".to_string(),
                 "mp3".to_string(),
             ]);
+            info!("[DOWNLOAD] Format: AUDIO ONLY");
         }
         (_, q) if q.ends_with("P VIDEO") => {
             let height = q.replace("P VIDEO", "");
+            // FORÇAR video+audio, REMOVER fallback que baixa só áudio
+            // Usa apenas video+audio, sem fallback "best" que pode causar .m4a separado
             args.extend_from_slice(&[
                 "-f".to_string(),
-                format!("bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={height}]+bestaudio/best"),
+                format!("bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={height}]+bestaudio"),
             ]);
+            info!("[DOWNLOAD] Format: {} (height={}, no fallback to audio-only)", q_str, height);
         }
-        _ => args.extend_from_slice(&[
-            "-f".to_string(),
-            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best".to_string(),
-        ]),
+        _ => {
+            // FORÇAR mp4+audio, sem fallback "best" que baixa só áudio
+            args.extend_from_slice(&[
+                "-f".to_string(),
+                "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio".to_string(),
+            ]);
+            info!("[DOWNLOAD] Format: BEST QUALITY (no fallback to audio-only)");
+        }
     }
 
     if !is_audio_only {
         args.extend_from_slice(&["--merge-output-format".to_string(), "mp4".to_string()]);
+        info!("[DOWNLOAD] Merge output format: mp4");
     }
+
+    info!("[DOWNLOAD] Full args: {:?}", args);
 
     if use_cookies {
         args.extend_from_slice(&["--cookies-from-browser".to_string(), browser_arg]);
@@ -185,7 +196,7 @@ pub fn spawn_download_thread(
                 match reader.read_until(b'\n', &mut raw) {
                     Ok(0) => break,
                     Ok(_) => {
-                        let full = String::from_utf8_lossy(&raw);
+                        let full = crate::utils::decode_bytes(&raw);
                         for line in full
                             .split('\r')
                             .map(|l| l.trim_end_matches('\n').to_string())
@@ -195,22 +206,7 @@ pub fn spawn_download_thread(
                                 debug!("[YTDLP-{}] {}", id_clone_2, line);
                             }
 
-                            if let Some(caps) = dest_re.captures(&line) {
-                                let path = caps[1].trim().to_string();
-                                let abs_path = PathBuf::from(&path).to_string_lossy().to_string();
-                                last_progress.output_path = abs_path.clone();
-                                last_progress.filename = PathBuf::from(&abs_path)
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let mut s = state_clone.lock().unwrap();
-                                if let Some(h) = s.get_mut(&id_clone_2) {
-                                    h.output_filepath = Some(abs_path);
-                                }
-                            }
-
-                            if let Some(caps) = already_re.captures(&line) {
+                            if let Some(caps) = dest_re.captures(&line).or(already_re.captures(&line)) {
                                 let path = caps[1].trim().to_string();
                                 let abs_path = PathBuf::from(&path).to_string_lossy().to_string();
                                 last_progress.output_path = abs_path.clone();
@@ -351,7 +347,8 @@ pub fn spawn_download_thread(
                 last_progress.percent = 100.0;
             } else {
                 last_progress.status = "error".to_string();
-                if let Ok(err_content) = std::fs::read_to_string(&stderr_path) {
+                if let Ok(err_bytes) = std::fs::read(&stderr_path) {
+                    let err_content = crate::utils::decode_bytes(&err_bytes);
                     let last_line = err_content
                         .lines()
                         .last()
