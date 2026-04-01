@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Film, Music, FileDown, FolderOpen, Clock, HardDrive, Video, Search, Trash2, CheckSquare, Square } from 'lucide-react';
 import { DownloadHistoryItem } from '../types';
@@ -34,12 +35,14 @@ export function HistoryList({
   onDelete,
 }: HistoryListProps) {
   const selectionMode = selectedItems.length > 0;
-  const filteredItems = items
-    .filter((item) => 
-      item.title.toLowerCase().includes(searchQuery.toLowerCase()) && 
-      (showArchive ? item.isMissing : !item.isMissing)
-    )
-    .sort((a, b) => sortOrder === 'oldest' ? a.completedAt - b.completedAt : b.completedAt - a.completedAt);
+  
+  const filteredItems = useMemo(() => {
+    return items
+      .filter((item) => 
+        item.title.toLowerCase().includes(searchQuery.toLowerCase())
+      )
+      .sort((a, b) => sortOrder === 'oldest' ? a.completedAt - b.completedAt : b.completedAt - a.completedAt);
+  }, [items, searchQuery, sortOrder]);
 
   const renderThumbnail = (item: DownloadHistoryItem) => {
     if (item.thumbnailDataUrl?.startsWith('data:') || item.thumbnailDataUrl?.startsWith('http')) {

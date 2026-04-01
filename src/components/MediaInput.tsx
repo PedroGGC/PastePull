@@ -20,6 +20,12 @@ interface MediaInputProps {
   mediaCapabilities: { video: boolean; audio: boolean };
   currentProgress: Record<string, DownloadProgress>;
   isDownloading: boolean;
+  selectedExtension: string;
+  setSelectedExtension: (ext: string) => void;
+  isExtensionDropdownOpen: boolean;
+  setIsExtensionDropdownOpen: (open: boolean) => void;
+  isFormatDropdownOpen: boolean;
+  setIsFormatDropdownOpen: (open: boolean) => void;
 }
 
 export function MediaInput({
@@ -36,14 +42,24 @@ export function MediaInput({
   setIsQualityDropdownOpen,
   mediaCapabilities,
   currentProgress,
+  selectedExtension,
+  setSelectedExtension,
+  isExtensionDropdownOpen,
+  setIsExtensionDropdownOpen,
+  isFormatDropdownOpen,
+  setIsFormatDropdownOpen,
 }: MediaInputProps) {
   const handleUrlChange = (e: ChangeEvent<HTMLInputElement>) => {
     setUrl(e.target.value);
   };
 
-  const isActiveForThisUrl = (Object.values(currentProgress) as DownloadProgress[]).some(
+  const isActiveForThisUrl = currentProgress ? (Object.values(currentProgress) as DownloadProgress[]).some(
     p => p.url === url && p.status !== 'completed'
-  );
+  ) : false;
+
+  const videoExtensions = ['MP4', 'MKV', 'WEBM'];
+  const audioExtensions = ['MP3', 'M4A', 'OGG', 'FLAC', 'WAV'];
+  const currentExtensions = selectedFormat === 'video' ? videoExtensions : audioExtensions;
 
   return (
     <div className="space-y-4">
@@ -91,17 +107,63 @@ export function MediaInput({
       </AnimatePresence>
 
       <div className="flex flex-col sm:flex-row gap-4 relative">
-        <div className="w-full sm:w-32 shrink-0 relative">
-          <select
-            value={selectedFormat}
-            onChange={(e) => setSelectedFormat(e.target.value as 'video' | 'audio')}
+        <div className="w-full sm:w-28 shrink-0 relative">
+          <button 
+            onClick={() => setIsFormatDropdownOpen(!isFormatDropdownOpen)}
             disabled={isAnalyzing}
-            className="w-full appearance-none bg-[#1a1a1a] border border-white/5 rounded-xl pl-4 pr-10 py-4 text-xs font-bold tracking-wider text-white focus:outline-none cursor-pointer disabled:opacity50 disabled:cursor-not-allowed"
+            className="w-full flex items-center justify-between bg-[#1a1a1a] border border-white/5 rounded-xl px-4 py-4 hover:bg-[#222] transition-colors"
           >
-            <option value="video" disabled={!mediaCapabilities.video}>{t('VIDEO', 'VÍDEO')}</option>
-            <option value="audio" disabled={!mediaCapabilities.audio}>{t('AUDIO', 'ÁUDIO')}</option>
-          </select>
-          <ChevronDown className="w-4 h-4 text-white/30 absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <span className={`text-xs font-bold tracking-wider ${isAnalyzing ? 'text-white/50' : 'text-white'}`}>
+              {selectedFormat === 'video' ? t('VIDEO', 'VÍDEO') : t('AUDIO', 'ÁUDIO')}
+            </span>
+            <ChevronDown className={`w-4 h-4 text-white/30 transition-transform duration-200 ${isFormatDropdownOpen ? 'rotate-180' : ''}`} />
+          </button>
+          {isFormatDropdownOpen && (
+            <div className="absolute top-full left-0 w-full mt-2 bg-[#1a1a1a] border border-white/5 rounded-xl shadow-xl z-50 overflow-hidden divide-y divide-white/5">
+              {mediaCapabilities.video && (
+                <button
+                  onClick={() => { setSelectedFormat('video'); setIsFormatDropdownOpen(false); }}
+                  className={`w-full text-left px-4 py-3 text-xs font-bold tracking-wider hover:bg-[#222] transition-colors ${selectedFormat === 'video' ? 'text-yellow-400 bg-white/5' : 'text-white'}`}
+                >
+                  {t('VIDEO', 'VÍDEO')}
+                </button>
+              )}
+              {mediaCapabilities.audio && (
+                <button
+                  onClick={() => { setSelectedFormat('audio'); setIsFormatDropdownOpen(false); }}
+                  className={`w-full text-left px-4 py-3 text-xs font-bold tracking-wider hover:bg-[#222] transition-colors ${selectedFormat === 'audio' ? 'text-yellow-400 bg-white/5' : 'text-white'}`}
+                >
+                  {t('AUDIO', 'ÁUDIO')}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="w-full sm:w-28 shrink-0 relative">
+          <button 
+            onClick={() => setIsExtensionDropdownOpen(!isExtensionDropdownOpen)}
+            disabled={isAnalyzing}
+            className="w-full flex items-center justify-between bg-[#1a1a1a] border border-white/5 rounded-xl px-4 py-4 hover:bg-[#222] transition-colors"
+          >
+            <span className={`text-xs font-bold tracking-wider ${isAnalyzing ? 'text-white/50' : 'text-white'}`}>
+              {selectedExtension}
+            </span>
+            <ChevronDown className={`w-4 h-4 text-white/30 transition-transform duration-200 ${isExtensionDropdownOpen ? 'rotate-180' : ''}`} />
+          </button>
+          {isExtensionDropdownOpen && (
+            <div className="absolute top-full left-0 w-full mt-2 bg-[#1a1a1a] border border-white/5 rounded-xl shadow-xl z-50 overflow-hidden divide-y divide-white/5">
+              {currentExtensions.map(ext => (
+                <button
+                  key={ext}
+                  onClick={() => { setSelectedExtension(ext); setIsExtensionDropdownOpen(false); }}
+                  className={`w-full text-left px-4 py-3 text-xs font-bold tracking-wider hover:bg-[#222] transition-colors ${selectedExtension === ext ? 'text-yellow-400 bg-white/5' : 'text-white'}`}
+                >
+                  {ext}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         <button 
@@ -112,11 +174,11 @@ export function MediaInput({
           <span className={`text-xs font-bold tracking-wider ${isAnalyzing ? 'animate-pulse text-white/50' : 'text-white'}`}>
             {isAnalyzing ? t('ANALYZING MEDIA...', 'ANALISANDO MÍDIA...') : (selectedQuality || t('AWAITING URL...', 'AGUARDANDO LINK...'))}
           </span>
-          <ChevronDown className="w-4 h-4 text-white/30" />
+          <ChevronDown className={`w-4 h-4 text-white/30 transition-transform duration-200 ${isQualityDropdownOpen ? 'rotate-180' : ''}`} />
         </button>
 
         {isQualityDropdownOpen && availableQualities.length > 0 && (
-          <div className="absolute top-18 left-0 sm:left-34 w-full sm:w-[calc(50%-4rem)] bg-[#1a1a1a] border border-white/5 rounded-xl shadow-xl z-50 overflow-hidden divide-y divide-white/5">
+          <div className="absolute top-full left-0 sm:left-[calc(14rem+8rem+1rem)] w-full sm:w-[calc(100%-14rem-8rem-1rem)] mt-2 bg-[#1a1a1a] border border-white/5 rounded-xl shadow-xl z-50 overflow-hidden divide-y divide-white/5">
             {availableQualities.map(q => (
               <button
                 key={q}

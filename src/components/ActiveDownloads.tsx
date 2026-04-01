@@ -10,9 +10,9 @@ interface ActiveDownloadsProps {
 }
 
 export function ActiveDownloads({ currentProgress, onCancel }: ActiveDownloadsProps) {
-  const activeDownloads = Object.values(currentProgress).filter((p): p is DownloadProgress => 
-    ['downloading', 'preparing', 'paused'].includes(p.status)
-  );
+  const activeDownloads = currentProgress ? Object.values(currentProgress).filter((p): p is DownloadProgress => 
+    ['downloading', 'preparing', 'paused', 'converting'].includes(p.status)
+  ) : [];
 
   const handlePause = async (id: string) => {
     try {
@@ -42,7 +42,9 @@ export function ActiveDownloads({ currentProgress, onCancel }: ActiveDownloadsPr
                   {t('ACTIVE DOWNLOAD', 'DOWNLOAD ATIVO')}
                 </div>
                 <p className="text-sm font-semibold text-white truncate w-full" title={p.title || p.filename}>
-                  {p.status === 'preparing' ? t('Preparing...', 'Preparando...') : cleanTitle(p.title || p.filename || t('Video', 'Vídeo'))}
+                  {p.status === 'preparing' ? t('Preparing...', 'Preparando...') : 
+                   p.status === 'converting' ? t('Converting...', 'Convertendo...') : 
+                   cleanTitle(p.title || p.filename || t('Video', 'Vídeo'))}
                 </p>
                 <p className="text-[10px] text-white/30 truncate mt-0.5 font-medium">
                   {p.output_path || p.filename}

@@ -3,7 +3,7 @@ export interface DownloadProgress {
   percent: number;
   speed: string;
   eta: string;
-  status: 'downloading' | 'paused' | 'completed' | 'error' | 'idle' | 'preparing' | 'oauth_required' | 'skipped';
+  status: 'downloading' | 'paused' | 'completed' | 'error' | 'idle' | 'preparing' | 'oauth_required' | 'skipped' | 'converting';
   filename: string;
   output_path: string;
   total_size: string;
@@ -16,6 +16,7 @@ export interface DownloadProgress {
   url: string;
   quality: string;
   format: string;
+  extension?: string;
 }
 
 export interface DownloadHistoryItem {

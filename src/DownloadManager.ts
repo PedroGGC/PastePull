@@ -29,7 +29,6 @@ export class DownloadManager {
       }
 
       if (/has already been downloaded/i.test(line)) {
-        console.log("Detectado arquivo existente no log!");
         onProgress({ percent: 100, size: '', speed: '', eta: '', raw: line, status: 'skipped' });
         return;
       }

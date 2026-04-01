@@ -19,7 +19,7 @@ export function RecentActivity({
   downloadPath,
   onViewAll,
 }: RecentActivityProps) {
-  const recentItems = items.slice(0, 5);
+  const recentItems = items.filter(item => item.thumbnailDataUrl).slice(0, 5);
 
   const renderThumbnail = (item: DownloadHistoryItem) => {
     if (item.thumbnailDataUrl?.startsWith('data:') || item.thumbnailDataUrl?.startsWith('http')) {
@@ -68,7 +68,7 @@ export function RecentActivity({
             >
               <div 
                 className="shrink-0 w-12 h-12 rounded-lg overflow-hidden bg-white/5 border border-white/10 flex items-center justify-center cursor-pointer"
-                onClick={() => console.log('Abrir arquivo:', item.filepath)}
+                onClick={() => onOpenFolder(item.filepath?.substring(0, item.filepath.lastIndexOf('\\')) || '')}
               >
                 {renderThumbnail(item)}
               </div>

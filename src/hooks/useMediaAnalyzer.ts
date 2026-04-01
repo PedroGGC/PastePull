@@ -50,7 +50,7 @@ export function useMediaAnalyzer(url: string): UseMediaAnalyzerReturn {
         }
         const heights = Array.from(hSet).sort((a, b) => b - a);
         const vOptions: string[] = [];
-        heights.forEach(h => vOptions.push(`${h}P VIDEO`));
+        heights.forEach(h => vOptions.push(`${h}P`));
         if (vOptions.length === 0 && meta.vcodec === 'none') {
         } else if (vOptions.length === 0) {
            vOptions.push('BEST QUALITY');

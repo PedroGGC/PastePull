@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, Dispatch, SetStateAction } from 'react';
+import { useEffect, useState, useCallback, Dispatch, SetStateAction, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { DownloadProgress, DownloadHistoryItem } from '../types';
@@ -11,6 +11,7 @@ interface UseDownloadProgressProps {
   downloadHistory: DownloadHistoryItem[];
   setDownloadHistory: Dispatch<SetStateAction<DownloadHistoryItem[]>>;
   saveHistoryToBackend: (items: DownloadHistoryItem[]) => Promise<void>;
+  onDownloadComplete?: (item: DownloadHistoryItem) => void;
   playNotificationSound: () => void;
   setNotification: Dispatch<SetStateAction<{type: 'success' | 'error' | 'warning', message: string, onClick?: () => void} | null>>;
 }
@@ -21,21 +22,24 @@ export function useDownloadProgress({
   downloadHistory,
   setDownloadHistory,
   saveHistoryToBackend,
+  onDownloadComplete,
   playNotificationSound,
   setNotification,
 }: UseDownloadProgressProps) {
   const [metadataTitleCache, setMetadataTitleCache] = useState<Record<string, { title: string; thumbnail: string }>>({});
+  const processedCompletedRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const unlisten = listen<DownloadProgress>('download-progress', (event) => {
       const p = event.payload;
       if (!p.id) return;
 
-      console.log("[Front] Evento recebido:", p.id, p.status, p.percent + "%");
-      
       const cachedMeta = metadataTitleCache[p.url];
 
       setCurrentProgress((prev) => {
+        if (!prev || !prev[p.id]) {
+          return prev || {};
+        }
         const existing = prev[p.id];
         const updated: DownloadProgress = {
           ...p,
@@ -43,7 +47,19 @@ export function useDownloadProgress({
           title: cachedMeta?.title || existing?.title || p.title || p.filename,
         };
 
+        if (p.status === 'converting') {
+          return { ...prev, [p.id]: { ...prev[p.id], status: 'converting', percent: 99 } };
+        }
+
         if (p.status === 'skipped' || p.status === 'completed') {
+          if (processedCompletedRef.current.has(p.id)) {
+            return prev;
+          }
+          processedCompletedRef.current.add(p.id);
+          
+          // Don't try to update prev if ID doesn't exist - just return prev
+          const prevHasId = prev && prev[p.id];
+          
           const resolveThumbnail = async () => {
             if (!p.thumbnail_path && !p.thumbnail) return null;
             if (p.thumbnailBase64) return p.thumbnailBase64;
@@ -59,15 +75,35 @@ export function useDownloadProgress({
           resolveThumbnail().then((dataUrl) => {
             setTimeout(() => {
               playNotificationSound();
-              const historyId = btoa(`${p.url}_${p.quality}_${p.format}`).replace(/=/g, '');
+              
+              // Rebuild correct filepath using requested extension
+              const getCorrectFilepath = () => {
+                if (!p.output_path) return '';
+                
+                const lastSlash = Math.max(p.output_path.lastIndexOf('/'), p.output_path.lastIndexOf('\\'));
+                const dir = lastSlash > 0 ? p.output_path.substring(0, lastSlash + 1) : '';
+                
+                // Get file base name (without extension)
+                const filenameBase = p.filename ? p.filename.replace(/\.[^.]+$/, '') : '';
+                
+                // Use requested extension (p.extension), not temp file extension
+                const ext = p.extension ? p.extension.toLowerCase() : 'mp3';
+                
+                // Use filename base if available, otherwise extract from output_path
+                const baseName = filenameBase || (p.output_path ? p.output_path.replace(/[\\/][^\\/]+$/, '').split(/[\\/]/).pop() : '');
+                
+                return dir + (baseName || 'download') + '.' + ext;
+              };
+              
+              const historyId = btoa(`${p.url}_${p.quality}_${p.format}_${p.extension || ''}`).replace(/=/g, '');
               const newItem: DownloadHistoryItem = {
                 id: historyId,
                 url: p.url,
                 title: cleanTitle(cachedMeta?.title || p.title || p.filename),
                 filename: p.filename,
-                filepath: p.output_path || '',
+                filepath: getCorrectFilepath(),
                 type: inferFileType(p.filename),
-                ext: (p.filename.split('.').pop() || '').toUpperCase(),
+                ext: p.extension || (p.filename.split('.').pop() || '').toUpperCase(),
                 completedAt: Date.now(),
                 sizeLabel: formatYtDlpSize(p.total_size || ''),
                 thumbnailDataUrl: dataUrl || cachedMeta?.thumbnail || undefined,
@@ -77,17 +113,14 @@ export function useDownloadProgress({
 
               setDownloadHistory((h) => {
                 const filtered = h.filter((item) => item.id !== newItem.id);
-                
-                const downloads = filtered.filter(item => !item.isMissing);
-                const history = filtered.filter(item => item.isMissing);
-                
-                const limitedDownloads = downloads.slice(0, 100);
-                const limitedHistory = history.slice(0, 50);
-                
-                const next = [newItem, ...limitedDownloads, ...limitedHistory];
+                const next = filtered.slice(0, 100);
                 saveHistoryToBackend(next);
                 return next;
               });
+
+              if (onDownloadComplete) {
+                onDownloadComplete(newItem);
+              }
 
               if (p.status === 'skipped') {
                 setNotification({ type: 'warning', message: t('Already downloaded!', 'Já foi baixado!') });
@@ -101,10 +134,22 @@ export function useDownloadProgress({
               });
             }, 2000);
           });
-          return { ...prev, [p.id]: { ...updated, percent: 100 } };
+          
+          // Only update progress if the ID exists in prev
+          if (prevHasId) {
+            return { ...prev, [p.id]: { ...updated, percent: 100 } };
+          } else {
+            // ID doesn't exist - just return prev (don't add to history since it's already done via async)
+            return prev || {};
+          }
         }
 
         if (p.status === 'error' || p.status === 'idle') {
+          // Don't process if ID doesn't exist in prev
+          if (!prev || !prev[p.id]) {
+            return prev || {};
+          }
+          
           if (p.status === 'error') {
             const lowErr = (p.error_message || '').toLowerCase();
             if (lowErr.includes('403') || lowErr.includes('sign in') || lowErr.includes('bot') || lowErr.includes('blocked') || lowErr.includes('rate limit')) {
@@ -140,6 +185,7 @@ export function useDownloadProgress({
   }, [metadataTitleCache]);
 
   useEffect(() => {
+    if (!currentProgress) return;
     (Object.values(currentProgress) as DownloadProgress[]).forEach((p) => {
       if (p.thumbnail_path && !p.thumbnailBase64) {
         invoke<string>('read_thumbnail_as_base64', { path: p.thumbnail_path })

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Folder,
@@ -23,6 +23,7 @@ import { useMediaAnalyzer } from './hooks/useMediaAnalyzer';
 import { useDownloadProgress } from './hooks/useDownloadProgress';
 import { DownloadProgress, DownloadHistoryItem, Settings as SettingsType } from './types';
 import { t } from './utils/i18n';
+import { safeBtoa, normalizeFileName, normalizeFilepath, isTempFile } from './utils/helpers';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<'search' | 'downloads' | 'settings'>('search');
@@ -63,6 +64,7 @@ export default function App() {
   });
 
   const [downloadHistory, setDownloadHistory] = useState<DownloadHistoryItem[]>([]);
+  const [downloadFolderItems, setDownloadFolderItems] = useState<DownloadHistoryItem[]>([]);
 
   useEffect(() => {
     invoke<DownloadHistoryItem[]>('load_history')
@@ -72,8 +74,13 @@ export default function App() {
         const savedPath = localStorage.getItem('ud_download_path');
         if (savedPath) {
           invoke('start_file_watcher', { path: savedPath })
-            .then(() => console.log('[FileWatcher] Started'))
             .catch((err) => console.error('[FileWatcher] Failed to start:', err));
+          
+          invoke<DownloadHistoryItem[]>('scan_download_folder', { folderPath: savedPath })
+            .then(folderItems => {
+              setDownloadFolderItems(folderItems);
+            })
+            .catch(err => console.error('[Scan] Failed:', err));
         }
       })
       .catch(err => console.error('[History] Load failed:', err));
@@ -92,35 +99,85 @@ export default function App() {
   useEffect(() => {
     const unlisten = listen<{ filepath: string; action: string }>('file-changed', (event) => {
       const { filepath, action } = event.payload;
-      console.log('[FileWatcher] Evento recebido:', action, filepath);
+      
+      if (isTempFile(filepath)) {
+        return;
+      }
+      
+      const eventFilename = filepath.split(/[\\/]/).pop() || '';
+      const eventFilenameBase = eventFilename.replace(/\.[^.]+$/, ''); 
+      const eventExt = eventFilename.split('.').pop()?.toUpperCase() || '';
 
-      setDownloadHistory((prev) => {
-        const updated = prev.map((item) => {
-          if (item.filepath && (item.filepath === filepath || filepath.startsWith(item.filepath))) {
-            const newIsMissing = action === 'deleted';
-            if (item.isMissing !== newIsMissing) {
-              console.log(`[FileWatcher] Atualizando ${item.title}: isMissing ${item.isMissing} -> ${newIsMissing}`);
-              return { ...item, isMissing: newIsMissing };
-            }
-          }
-          return item;
+      if (action === 'deleted') {
+        setDownloadFolderItems(prev => prev.filter(item => item.filepath !== filepath));
+        
+        const existsInHistory = downloadHistory.some(item => {
+          const itemFilename = item.filepath.split(/[\\/]/).pop() || '';
+          const itemFilenameBase = itemFilename.replace(/\.[^.]+$/, '');
+          const itemExt = item.ext?.toUpperCase() || '';
+          return itemFilenameBase.toLowerCase() === eventFilenameBase.toLowerCase() && itemExt === eventExt;
         });
 
-        const changed = updated.some((item, idx) => 
-          prev[idx] && (prev[idx].isMissing !== item.isMissing)
-        );
-        
-        if (changed) {
+        if (!existsInHistory) {
+          const newHistoryItem: DownloadHistoryItem = {
+            id: safeBtoa(filepath),
+            url: '',
+            title: eventFilenameBase,
+            filename: eventFilename,
+            filepath: filepath,
+            type: eventExt.match(/^(MP3|M4A|OGG|FLAC|WAV)$/i) ? 'audio' : 'video',
+            ext: eventExt,
+            completedAt: Date.now(),
+            sizeLabel: '',
+            format: eventExt.match(/^(MP3|M4A|OGG|FLAC|WAV)$/i) ? 'audio' : 'video',
+            quality: '',
+          };
+          
+          const updated = [newHistoryItem, ...downloadHistory];
+          setDownloadHistory(updated);
           saveHistoryRef.current(updated);
         }
-        return updated;
-      });
+      } else if (action === 'restored') {
+        setDownloadFolderItems(prev => {
+          const exists = prev.some(item => item.filepath === filepath);
+          if (!exists) {
+            const newItem: DownloadHistoryItem = {
+              id: safeBtoa(filepath),
+              url: '',
+              title: eventFilenameBase,
+              filename: eventFilename,
+              filepath: filepath,
+              type: eventExt.match(/^(MP3|M4A|OGG|FLAC|WAV)$/i) ? 'audio' : 'video',
+              ext: eventExt,
+              completedAt: Date.now(),
+              sizeLabel: '',
+              format: eventExt.match(/^(MP3|M4A|OGG|FLAC|WAV)$/i) ? 'audio' : 'video',
+              quality: '',
+            };
+            return [newItem, ...prev];
+          }
+          return prev;
+        });
+
+        setDownloadHistory(prev => {
+          const filtered = prev.filter(item => {
+            const itemFilename = item.filepath.split(/[\\/]/).pop() || '';
+            const itemFilenameBase = itemFilename.replace(/\.[^.]+$/, '');
+            const itemExt = item.ext?.toUpperCase() || '';
+            return !(itemFilenameBase.toLowerCase() === eventFilenameBase.toLowerCase() && itemExt === eventExt);
+          });
+          if (filtered.length !== prev.length) {
+            saveHistoryRef.current(filtered);
+          }
+          return filtered;
+        });
+      }
     });
 
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, []);
+  }, [downloadHistory]);
 
   useEffect(() => {
     if ((currentScreen === 'search' || currentScreen === 'downloads') && downloadHistory.length > 0) {
@@ -162,6 +219,9 @@ export default function App() {
   const [isQualityDropdownOpen, setIsQualityDropdownOpen] = useState(false);
   
   const [selectedFormat, setSelectedFormat] = useState<'video' | 'audio'>('video');
+  const [selectedExtension, setSelectedExtension] = useState<string>('MP4');
+  const [isExtensionDropdownOpen, setIsExtensionDropdownOpen] = useState(false);
+  const [isFormatDropdownOpen, setIsFormatDropdownOpen] = useState(false);
   
   const { analyzedMedia, isAnalyzing, videoQualities, mediaCapabilities } = useMediaAnalyzer(url);
 
@@ -185,9 +245,16 @@ export default function App() {
     if (selectedFormat === 'audio') {
       setAvailableQualities(['AUDIO ONLY']);
       setSelectedQuality('AUDIO ONLY');
+      setSelectedExtension('MP3');
     } else {
-      setAvailableQualities(videoQualities.length > 0 ? videoQualities : ['BEST QUALITY']);
-      setSelectedQuality(videoQualities.length > 0 ? videoQualities[0] : 'BEST QUALITY');
+      if (videoQualities.length > 0) {
+        setAvailableQualities(videoQualities);
+        setSelectedQuality(videoQualities[0]);
+      } else {
+        setAvailableQualities(['BEST QUALITY']);
+        setSelectedQuality('BEST QUALITY');
+      }
+      setSelectedExtension('MP4');
     }
   }, [selectedFormat, videoQualities]);
 
@@ -211,18 +278,24 @@ export default function App() {
     }
   };
 
-  const activeList = (Object.values(currentProgress) as DownloadProgress[]).filter((p) => ['downloading', 'preparing', 'paused'].includes(p.status));
-  const totalSpeedMiB = activeList.reduce((acc, p) => {
-    if (!p.speed || p.speed === '-') return acc;
-    const match = p.speed.match(/^([\d.]+)\s*([a-zA-Z/]+)/);
-    if (!match) return acc;
-    const val = parseFloat(match[1]);
-    const unit = match[2].toUpperCase();
-    if (unit.includes('G')) return acc + val * 1024;
-    if (unit.includes('M')) return acc + val;
-    if (unit.includes('K')) return acc + val / 1024;
-    return acc + val / 1048576;
-  }, 0);
+  const activeList = useMemo(() => 
+    (currentProgress ? Object.values(currentProgress) as DownloadProgress[] : []).filter((p) => 
+      ['downloading', 'preparing', 'paused', 'converting'].includes(p.status)
+    ), [currentProgress]);
+  
+  const totalSpeedMiB = useMemo(() => {
+    return activeList.reduce((acc, p) => {
+      if (!p.speed || p.speed === '-') return acc;
+      const match = p.speed.match(/^([\d.]+)\s*([a-zA-Z/]+)/);
+      if (!match) return acc;
+      const val = parseFloat(match[1]);
+      const unit = match[2].toUpperCase();
+      if (unit.includes('G')) return acc + val * 1024;
+      if (unit.includes('M')) return acc + val;
+      if (unit.includes('K')) return acc + val / 1024;
+      return acc + val / 1048576;
+    }, 0);
+  }, [activeList]);
 
   const speedValue = totalSpeedMiB >= 100 ? totalSpeedMiB.toFixed(0) : totalSpeedMiB.toFixed(1);
   const speedUnit = 'MB/s';
@@ -233,6 +306,39 @@ export default function App() {
     downloadHistory,
     setDownloadHistory,
     saveHistoryToBackend,
+    onDownloadComplete: (newItem) => {
+      const ext = newItem.ext?.toLowerCase() || '';
+      if (ext === 'jpg' || ext === 'webp') {
+        return;
+      }
+      const newFilePathNormalized = normalizeFilepath(newItem.filepath || '');
+      setDownloadFolderItems(prev => {
+        const existingIndex = prev.findIndex(i => 
+          normalizeFilepath(i.filepath || '') === newFilePathNormalized
+        );
+        
+        if (existingIndex >= 0) {
+          const updated = [...prev];
+          updated[existingIndex] = {
+            ...updated[existingIndex],
+            thumbnailDataUrl: newItem.thumbnailDataUrl || updated[existingIndex].thumbnailDataUrl,
+            sizeLabel: newItem.sizeLabel || updated[existingIndex].sizeLabel,
+            url: newItem.url || updated[existingIndex].url,
+            format: newItem.format || updated[existingIndex].format,
+            quality: newItem.quality || updated[existingIndex].quality,
+          };
+          return updated;
+        }
+        
+        const newList = [newItem, ...prev];
+        return newList;
+      });
+      setDownloadHistory(prev => {
+        const filtered = prev.filter(i => i.id !== newItem.id);
+        saveHistoryRef.current(filtered);
+        return filtered;
+      });
+    },
     playNotificationSound,
     setNotification,
   });
@@ -260,6 +366,7 @@ export default function App() {
     setUrl(item.url);
     setSelectedFormat(item.format as 'video' | 'audio');
     setSelectedQuality(item.quality);
+    setSelectedExtension(item.ext || 'MP4');
     setCurrentScreen('search');
     setNotification({ type: 'success', message: t('Download settings restored!', 'Configurações restauradas!') });
     setTimeout(() => setNotification(null), 10000);
@@ -267,21 +374,27 @@ export default function App() {
 
   const handleMoveToTrash = useCallback(async (items: DownloadHistoryItem[]) => {
     setIsDeleting(true);
-    for (const item of items) {
-      try {
-        await invoke('move_to_trash', { filepath: item.filepath });
-      } catch (err) {
-        console.error('Error moving to trash:', err);
-      }
+    
+    try {
+      const paths = items.map(item => item.filepath);
+      await invoke('move_multiple_to_trash', { paths });
+    } catch (err) {
+      console.error('Error moving to trash:', err);
     }
+    
     setIsDeleting(false);
     
-    setDownloadHistory((prev) => {
-      const updated = prev.map((item) => 
-        items.some((i) => i.id === item.id) ? { ...item, isMissing: true } : item
-      );
-      saveHistoryRef.current(updated);
-      return updated;
+    setDownloadFolderItems(prev => prev.filter(item => !items.some(i => i.id === item.id)));
+    setDownloadHistory(prev => {
+      const newHistory = [...prev];
+      for (const item of items) {
+        const exists = newHistory.some(h => h.filepath === item.filepath);
+        if (!exists) {
+          newHistory.unshift({ ...item, isMissing: true });
+        }
+      }
+      saveHistoryRef.current(newHistory);
+      return newHistory;
     });
     
     setNotification({ type: 'success', message: t(`${items.length} item(s) moved to trash`, `${items.length} item(s) movido(s) para a lixeira`) });
@@ -298,7 +411,22 @@ export default function App() {
 
   const handleDownloadClick = async () => {
     if (!url) return;
-    const activeCount = Object.values(currentProgress).filter((p: DownloadProgress) => !['completed', 'error', 'skipped'].includes(p.status)).length;
+    
+    // Check if file already exists in download folder
+    const existingInDownloads = downloadFolderItems.find(item => 
+      item.url === url && item.ext?.toUpperCase() === selectedExtension.toUpperCase()
+    );
+    
+    if (existingInDownloads) {
+      setNotification({ 
+        type: 'warning', 
+        message: t('Already downloaded!', 'Já foi baixado!')
+      });
+      setTimeout(() => setNotification(null), 10000);
+      return;
+    }
+
+    const activeCount = (currentProgress ? Object.values(currentProgress) : []).filter((p: DownloadProgress) => !['completed', 'error', 'skipped', 'converting'].includes(p.status)).length;
 
     if (activeCount >= settings.maxDownloads) {
       setNotification({
@@ -312,18 +440,6 @@ export default function App() {
 
     try {
       const effectiveDir = downloadPath || '';
-      if (effectiveDir) {
-        const alreadyExists = await invoke<boolean>('find_file_by_title', {
-          dir: effectiveDir,
-          title: metadataTitleRef.current || '',
-        });
-        if (alreadyExists) {
-          playNotificationSound();
-          setNotification({ type: 'warning', message: t('Already downloaded!', 'Já foi baixado!') });
-          setTimeout(() => setNotification(null), 10000);
-          return;
-        }
-      }
       
       const titleToUse = analyzedMedia?.qualityLabel.startsWith('AUDIO') 
         ? (metadataTitleRef.current || t('Audio', 'Áudio')) 
@@ -334,10 +450,12 @@ export default function App() {
         outputDir: downloadPath, 
         quality: selectedQuality || null, 
         formatType: selectedFormat,
-        title: titleToUse
+        title: titleToUse,
+        extension: selectedExtension
       });
 
-      const intentId = btoa(`${url}_${selectedQuality || ''}_${selectedFormat}`).replace(/=/g, '');
+      const intentId = safeBtoa(`${url}_${selectedQuality || ''}_${selectedFormat}_${selectedExtension}`);
+      
       setDownloadHistory(h => {
         const next = h.filter(item => item.id !== intentId);
         if (next.length !== h.length) saveHistoryToBackend(next);
@@ -358,7 +476,8 @@ export default function App() {
           total_size: '',
           thumbnail_path: '',
           raw: '',
-          thumbnail: metadataThumbnailRef.current || ''
+          thumbnail: metadataThumbnailRef.current || '',
+          extension: selectedExtension
         }
       }));
     } catch (error: unknown) {
@@ -506,13 +625,16 @@ export default function App() {
                     onClick={() => {
                       const items = deleteModal.items;
                       const mode = deleteModal.mode;
-                      setDeleteModal(null);
-                      setSelectedItems([]);
                       
                       if (mode === 'trash') {
-                        handleMoveToTrash(items);
+                        handleMoveToTrash(items).then(() => {
+                          setDeleteModal(null);
+                          setSelectedItems([]);
+                        });
                       } else {
                         handleDeleteFromHistory(items);
+                        setDeleteModal(null);
+                        setSelectedItems([]);
                       }
                     }}
                     disabled={isDeleting}
@@ -521,7 +643,7 @@ export default function App() {
                     {isDeleting ? (
                       <>
                         <span className="animate-spin">⟳</span>
-                        {t('Moving...', 'Movendo...')}
+                        {t('DELETANDO...', 'DELETANDO...')}
                       </>
                     ) : (
                       deleteModal.mode === 'trash' ? t('Move to trash', 'Mover para lixeira') : t('Remove', 'Remover')
@@ -558,6 +680,12 @@ export default function App() {
                   mediaCapabilities={mediaCapabilities}
                   currentProgress={currentProgress}
                   isDownloading={isDownloading}
+                  selectedExtension={selectedExtension}
+                  setSelectedExtension={setSelectedExtension}
+                  isExtensionDropdownOpen={isExtensionDropdownOpen}
+                  setIsExtensionDropdownOpen={setIsExtensionDropdownOpen}
+                  isFormatDropdownOpen={isFormatDropdownOpen}
+                  setIsFormatDropdownOpen={setIsFormatDropdownOpen}
                 />
 
                 <button 
@@ -574,7 +702,7 @@ export default function App() {
                 />
 
                 <RecentActivity
-                  items={downloadHistory}
+                  items={downloadFolderItems}
                   onItemClick={() => {}}
                   onRedownload={handleRedownload}
                   onOpenFolder={handleOpenFolder}
@@ -589,7 +717,7 @@ export default function App() {
                 <div className="flex flex-col gap-4 border-b border-white/5 pb-6">
                   <div className="flex items-center justify-end">
                     <div className="flex items-center gap-3">
-                      {downloadHistory.length > 0 && (
+                      {(downloadFolderItems.length > 0 || downloadHistory.length > 0) && (
                         <div className="flex items-center bg-white/5 p-1 rounded-xl border border-white/5">
                           <button 
                             onClick={() => setShowArchive(false)} 
@@ -607,13 +735,13 @@ export default function App() {
                           </button>
                         </div>
                       )}
-                      {downloadHistory.length > 0 && (
+                      {(downloadFolderItems.length > 0 || downloadHistory.length > 0) && (
                         <button onClick={() => setSortOrder(prev => prev === 'newest' ? 'oldest' : 'newest')} className="flex items-center gap-1.5 bg-white/5 hover:bg-white/10 text-white/70 px-3 py-1.5 rounded-lg transition-colors text-xs font-semibold uppercase tracking-widest cursor-pointer">
                           <Clock size={14} className={`transition-transform duration-300 ${sortOrder === 'oldest' ? 'rotate-180' : ''}`} />
                           {sortOrder === 'newest' ? t('Newest', 'Mais Novos') : t('Oldest', 'Mais Antigos')}
                         </button>
                       )}
-                      {downloadHistory.length > 0 && (
+                      {(downloadFolderItems.length > 0 || downloadHistory.length > 0) && (
                         <div className="flex items-center gap-2">
                           <button 
                             onClick={() => {
@@ -621,8 +749,8 @@ export default function App() {
                                 setSelectedItems([]);
                               } else {
                                 const currentItems = showArchive 
-                                  ? downloadHistory.filter(i => i.isMissing)
-                                  : downloadHistory.filter(i => !i.isMissing);
+                                  ? downloadHistory
+                                  : downloadFolderItems;
                                 setSelectedItems(currentItems.map(i => i.id));
                               }
                             }}
@@ -633,15 +761,15 @@ export default function App() {
                           </button>
                           <span className="bg-white/10 text-white/70 text-xs font-bold px-3 py-1 rounded-full">
                             {showArchive 
-                              ? downloadHistory.filter(i => i.isMissing).length 
-                              : downloadHistory.filter(i => !i.isMissing).length
+                              ? downloadHistory.length
+                              : downloadFolderItems.length
                             } {t('file', 'arquivo')}
                           </span>
                         </div>
                       )}
                     </div>
                   </div>
-                  {downloadHistory.length > 0 && (
+                  {(downloadFolderItems.length > 0 || downloadHistory.length > 0) && (
                     <div className="relative">
                       <input type="text" placeholder={t('Search downloads...', 'Procurar downloads...')} value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full bg-[#1a1a1a] border border-white/5 rounded-xl pl-12 pr-6 py-3 text-white placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-white/20 transition-all" />
                     </div>
@@ -660,8 +788,8 @@ export default function App() {
                       <button 
                         onClick={() => {
                           const currentItems = showArchive 
-                            ? downloadHistory.filter(i => i.isMissing)
-                            : downloadHistory.filter(i => !i.isMissing);
+                            ? downloadHistory
+                            : downloadFolderItems;
                           const itemsToDelete = currentItems.filter(i => selectedItems.includes(i.id));
                           setDeleteModal({ show: true, items: itemsToDelete, mode: showArchive ? 'history' : 'trash' });
                         }}
@@ -674,7 +802,7 @@ export default function App() {
                   </div>
                 )}
                 <HistoryList
-                  items={downloadHistory}
+                  items={showArchive ? downloadHistory : downloadFolderItems}
                   searchQuery={searchQuery}
                   setSearchQuery={setSearchQuery}
                   showArchive={showArchive}

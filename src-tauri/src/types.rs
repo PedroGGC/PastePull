@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::process::Child;
 use std::sync::{Arc, Mutex};
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug, Default)]
 pub struct DownloadProgress {
     pub id: String,
     pub percent: f64,
@@ -18,6 +18,7 @@ pub struct DownloadProgress {
     pub url: String,
     pub quality: String,
     pub format: String,
+    pub extension: Option<String>,
 }
 
 pub struct DownloadHandle {
@@ -28,6 +29,7 @@ pub struct DownloadHandle {
     pub last_progress: Option<DownloadProgress>,
     pub output_dir: String,
     pub requested_title: String,
+    pub is_audio: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

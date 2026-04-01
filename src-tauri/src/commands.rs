@@ -18,6 +18,7 @@ pub async fn start_download(
     quality: Option<String>,
     format_type: Option<String>,
     title: Option<String>,
+    extension: Option<String>,
     app: AppHandle,
     state: State<'_, SharedDownloadState>,
 ) -> Result<String, String> {
@@ -39,7 +40,7 @@ pub async fn start_download(
         return Err(format!("yt-dlp.exe não encontrado: {}", ytdlp_path.display()));
     }
 
-    let (_, args) = build_ytdlp_args(&ytdlp_path, &url, &output_dir, quality.clone(), format_type.clone(), title.clone())?;
+    let (_, args) = build_ytdlp_args(&ytdlp_path, &url, &output_dir, quality.clone(), format_type.clone(), title.clone(), extension.clone())?;
 
     let tmp_dir = std::env::temp_dir();
     let stdout_path = tmp_dir.join(format!("ytdlp_stdout_{}.log", task_id));
@@ -66,6 +67,8 @@ pub async fn start_download(
 
     let quality_c = quality.clone().unwrap_or_default();
     let format_c = format_type.clone().unwrap_or_else(|| "video".to_string());
+    let extension_c = extension.clone().unwrap_or_default();
+    let is_audio = format_c == "audio" || ["MP3", "M4A", "OGG", "FLAC", "WAV"].iter().any(|&e| extension_c.to_uppercase() == e);
 
     {
         let mut s = state.lock().unwrap();
@@ -78,6 +81,7 @@ pub async fn start_download(
                 thumbnail_filepath: None,
                 output_dir: output_dir.clone(),
                 requested_title: title.clone().unwrap_or_default(),
+                is_audio,
                 last_progress: Some(DownloadProgress {
                     id: task_id.clone(),
                     percent: 0.0,
@@ -92,6 +96,7 @@ pub async fn start_download(
                     url: url.clone(),
                     quality: quality_c,
                     format: format_c,
+                    extension: Some(extension_c),
                 }),
             },
         );
@@ -106,12 +111,14 @@ pub async fn start_download(
         url,
         quality.unwrap_or_default(),
         format_type.unwrap_or_else(|| "video".to_string()),
+        extension.unwrap_or_default(),
         output_dir,
         title.unwrap_or_default(),
         state_clone,
         app.clone(),
         stderr_path,
         stdout_path,
+        is_audio,
     );
 
     Ok(task_id)
@@ -232,6 +239,7 @@ pub async fn cancel_download(
                 url: String::new(),
                 quality: String::new(),
                 format: String::new(),
+                extension: None,
             },
         );
     });
@@ -343,12 +351,16 @@ pub fn open_folder_natively(path: String) {
 }
 
 #[tauri::command]
-pub fn find_file_by_title(dir: String, title: String) -> bool {
+pub fn find_file_by_title(dir: String, title: String, extension: Option<String>) -> bool {
     let title_norm = ascii_alphanum(&title);
     if title_norm.len() < 8 {
         return false;
     }
     let threshold = (title_norm.len() * 4 / 5).max(10);
+
+    let ext_requested = extension
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
 
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return false;
@@ -375,6 +387,9 @@ pub fn find_file_by_title(dir: String, title: String) -> bool {
         let common = title_norm.chars().zip(file_norm.chars()).take_while(|(a, b)| a == b).count();
 
         if common >= threshold {
+            if !ext_requested.is_empty() && ext != ext_requested {
+                continue;
+            }
             return true;
         }
     }
@@ -498,11 +513,7 @@ pub fn resolve_paths(paths: Vec<String>) -> Vec<Option<String>> {
                                 .unwrap_or("")
                                 .to_lowercase();
 
-                            let ext_match = target_ext.is_empty()
-                                || entry_ext.is_empty()
-                                || target_ext == entry_ext
-                                || (target_ext == "mp4" && entry_ext == "m4v")
-                                || (target_ext == "m4v" && entry_ext == "mp4");
+                            let ext_match = target_ext == entry_ext;
 
                             if !ext_match {
                                 continue;
@@ -540,6 +551,18 @@ pub fn resolve_paths(paths: Vec<String>) -> Vec<Option<String>> {
                             }
 
                             let entry_name = entry_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                            
+                            // Get extension and validate it matches target
+                            let entry_ext = entry_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                            let target_ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                            
+                            // Only match if extensions are exactly the same
+                            // Each format (MP3, MP4, MKV, WEBM, OGG, WAV, FLAC) is treated as a separate file
+                            let ext_compatible = target_ext == entry_ext;
+                            
+                            if !ext_compatible {
+                                continue;
+                            }
 
                             let normalized_search = search_key.to_lowercase();
                             let normalized_entry = entry_name.to_lowercase();
@@ -547,13 +570,7 @@ pub fn resolve_paths(paths: Vec<String>) -> Vec<Option<String>> {
                             if normalized_entry.contains(&normalized_search)
                                 || normalized_search.contains(&normalized_entry.split('.').next().unwrap_or(&normalized_entry))
                             {
-                                let ext = entry_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-                                let valid_exts = [
-                                    "mp4", "mkv", "avi", "mov", "webm", "m4v", "mp3", "flac", "aac", "wav", "ogg", "m4a", "opus",
-                                ];
-                                if valid_exts.contains(&ext.as_str()) {
-                                    return Some(entry_path.to_string_lossy().to_string());
-                                }
+                                return Some(entry_path.to_string_lossy().to_string());
                             }
                         }
                     }
@@ -572,7 +589,6 @@ pub fn scan_download_folder(folder_path: String) -> Result<Vec<HistoryEntry>, St
     }
 
     let mut items = Vec::new();
-    let video_exts = vec!["mp4", "mkv", "avi", "mov", "webm", "flv", "m4v", "ts"];
     let audio_exts = vec!["mp3", "flac", "aac", "wav", "ogg", "m4a", "opus"];
 
     if let Ok(entries) = std::fs::read_dir(&path) {
@@ -585,11 +601,22 @@ pub fn scan_download_folder(folder_path: String) -> Result<Vec<HistoryEntry>, St
             let filename = entry_path.file_name().unwrap_or_default().to_string_lossy().to_string();
             let ext = entry_path.extension().unwrap_or_default().to_string_lossy().to_string().to_lowercase();
 
-            if filename.ends_with(".part") || filename.ends_with(".ytdl") || filename.ends_with(".jpg") || filename.ends_with(".webp") {
+            // Only include valid media files - everything else is temp/thumbnail
+            let valid_media_exts = vec!["mp4", "mkv", "avi", "mov", "webm", "flv", "m4v", "ts", "mp3", "flac", "aac", "wav", "ogg", "m4a", "opus"];
+            if !valid_media_exts.contains(&ext.as_str()) {
                 continue;
             }
 
-            let file_type = if video_exts.contains(&ext.as_str()) {
+            // Skip files with temp patterns in name (yt-dlp fragments, partial downloads, etc)
+            let lower_filename = filename.to_lowercase();
+            if lower_filename.contains(".fhls-") || 
+               lower_filename.contains(".fdash-") ||
+               lower_filename.contains(".fmp4") ||
+               lower_filename.contains(".part") {
+                continue;
+            }
+
+            let file_type = if vec!["mp4", "mkv", "avi", "mov", "webm", "flv", "m4v", "ts"].contains(&ext.as_str()) {
                 "video"
             } else if audio_exts.contains(&ext.as_str()) {
                 "audio"
@@ -696,7 +723,7 @@ pub fn move_to_trash(filepath: String) -> Result<(), String> {
             return Err(format!("Erro ao mover para lixeira: {}", err));
         }
 
-        // Derivar e mover thumbnail (mesmo nome, extensão .jpg)
+        // Derive and move thumbnail (same name, .jpg extension)
         if let Some(parent) = path.parent() {
             if let Some(stem) = path.file_stem() {
                 let thumb_filename = format!("{}.jpg", stem.to_string_lossy());
@@ -715,6 +742,71 @@ pub fn move_to_trash(filepath: String) -> Result<(), String> {
                         .output();
                 }
             }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        return Err("Esta funcionalidade só está disponível no Windows".to_string());
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn move_multiple_to_trash(paths: Vec<String>) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::process::Command;
+        
+        let mut all_files: Vec<String> = Vec::new();
+        
+        for filepath in &paths {
+            let path = PathBuf::from(filepath);
+            all_files.push(filepath.clone());
+            
+            if let Some(parent) = path.parent() {
+                if let Some(stem) = path.file_stem() {
+                    let thumb_filename = format!("{}.jpg", stem.to_string_lossy());
+                    let thumb_path = parent.join(&thumb_filename);
+                    if thumb_path.exists() {
+                        all_files.push(thumb_path.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+        
+        if all_files.is_empty() {
+            return Ok(());
+        }
+        
+        let files_array = all_files
+            .iter()
+            .map(|f| format!("'{}'", f.replace("'", "''")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        
+        let ps_script = format!(
+            r#"
+$files = @({})
+foreach ($f in $files) {{
+    if (Test-Path $f) {{
+        Add-Type -AssemblyName Microsoft.VisualBasic
+        [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($f, 'OnlyErrorDialogs', 'SendToRecycleBin')
+    }}
+}}
+"#,
+            files_array
+        );
+        
+        let output = Command::new("powershell")
+            .args(["-Command", &ps_script])
+            .output()
+            .map_err(|e| e.to_string())?;
+
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("Erro ao mover para lixeira: {}", err));
         }
     }
 
