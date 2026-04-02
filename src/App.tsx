@@ -66,6 +66,8 @@ export default function App() {
   const [downloadHistory, setDownloadHistory] = useState<DownloadHistoryItem[]>([]);
   const [downloadFolderItems, setDownloadFolderItems] = useState<DownloadHistoryItem[]>([]);
 
+  const thumbnailCache = useRef<Record<string, string>>({});
+
   useEffect(() => {
     invoke<DownloadHistoryItem[]>('load_history')
       .then(items => {
@@ -96,6 +98,24 @@ export default function App() {
     saveHistoryRef.current = saveHistoryToBackend;
   }, [saveHistoryToBackend]);
 
+  const loadThumbnail = useCallback(async (filepath: string): Promise<string | null> => {
+    const cached = thumbnailCache.current[filepath];
+    if (cached) return cached;
+    
+    try {
+      const result = await invoke<string>('read_thumbnail_as_base64', { path: filepath });
+      thumbnailCache.current[filepath] = result;
+      return result;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const loadThumbnailRef = useRef(loadThumbnail);
+  useEffect(() => {
+    loadThumbnailRef.current = loadThumbnail;
+  }, [loadThumbnail]);
+
   useEffect(() => {
     const unlisten = listen<{ filepath: string; action: string }>('file-changed', (event) => {
       const { filepath, action } = event.payload;
@@ -109,6 +129,12 @@ export default function App() {
       const eventExt = eventFilename.split('.').pop()?.toUpperCase() || '';
 
       if (action === 'deleted') {
+        const existingItem = downloadFolderItems.find(item => item.filepath === filepath);
+        const thumbnailFromMemory = existingItem?.thumbnailDataUrl;
+        const sizeFromMemory = existingItem?.sizeLabel || '';
+        const extFromMemory = existingItem?.ext || eventExt;
+        const qualityFromMemory = existingItem?.quality || '';
+        
         setDownloadFolderItems(prev => prev.filter(item => item.filepath !== filepath));
         
         const existsInHistory = downloadHistory.some(item => {
@@ -126,11 +152,12 @@ export default function App() {
             filename: eventFilename,
             filepath: filepath,
             type: eventExt.match(/^(MP3|M4A|OGG|FLAC|WAV)$/i) ? 'audio' : 'video',
-            ext: eventExt,
+            ext: extFromMemory,
             completedAt: Date.now(),
-            sizeLabel: '',
+            sizeLabel: sizeFromMemory,
             format: eventExt.match(/^(MP3|M4A|OGG|FLAC|WAV)$/i) ? 'audio' : 'video',
-            quality: '',
+            quality: qualityFromMemory,
+            thumbnailDataUrl: thumbnailFromMemory || undefined,
           };
           
           const updated = [newHistoryItem, ...downloadHistory];
@@ -138,25 +165,84 @@ export default function App() {
           saveHistoryRef.current(updated);
         }
       } else if (action === 'restored') {
-        setDownloadFolderItems(prev => {
-          const exists = prev.some(item => item.filepath === filepath);
-          if (!exists) {
-            const newItem: DownloadHistoryItem = {
-              id: safeBtoa(filepath),
-              url: '',
-              title: eventFilenameBase,
-              filename: eventFilename,
-              filepath: filepath,
-              type: eventExt.match(/^(MP3|M4A|OGG|FLAC|WAV)$/i) ? 'audio' : 'video',
-              ext: eventExt,
-              completedAt: Date.now(),
-              sizeLabel: '',
-              format: eventExt.match(/^(MP3|M4A|OGG|FLAC|WAV)$/i) ? 'audio' : 'video',
-              quality: '',
-            };
-            return [newItem, ...prev];
+        const existingItem = downloadFolderItems.find(item => item.filepath === filepath);
+        const sizeFromMemory = existingItem?.sizeLabel || '';
+        const extFromMemory = existingItem?.ext || eventExt;
+        const qualityFromMemory = existingItem?.quality || '';
+        
+        const thumbPathJpg = filepath.replace(/\.[^.]+$/, '.jpg');
+        const parentDir = filepath.substring(0, filepath.lastIndexOf('\\') + 1);
+        const baseName = filepath.split('\\').pop()?.replace(/\.[^.]+$/, '') || '';
+        const thumbPathExact = parentDir + baseName + '.jpg';
+        
+        const tryLoadThumbnail = async (path: string) => {
+          try {
+            return await invoke<string>('read_thumbnail_as_base64', { path });
+          } catch {
+            return null;
           }
-          return prev;
+        };
+        
+        loadThumbnailRef.current(thumbPathJpg).then(thumb => {
+          if (!thumb) {
+            tryLoadThumbnail(thumbPathExact).then(fallbackThumb => {
+              setDownloadFolderItems(prev => {
+                const exists = prev.some(item => item.filepath === filepath);
+                if (!exists) {
+                  const newItem: DownloadHistoryItem = {
+                    id: safeBtoa(filepath),
+                    url: '',
+                    title: eventFilenameBase,
+                    filename: eventFilename,
+                    filepath: filepath,
+                    type: eventExt.match(/^(MP3|M4A|OGG|FLAC|WAV)$/i) ? 'audio' : 'video',
+                    ext: extFromMemory,
+                    completedAt: Date.now(),
+                    sizeLabel: sizeFromMemory,
+                    format: eventExt.match(/^(MP3|M4A|OGG|FLAC|WAV)$/i) ? 'audio' : 'video',
+                    quality: qualityFromMemory,
+                    thumbnailDataUrl: fallbackThumb || undefined,
+                  };
+                  return [newItem, ...prev];
+                }
+                
+                return prev.map(item => {
+                  if (item.filepath === filepath && !item.thumbnailDataUrl && fallbackThumb) {
+                    return { ...item, thumbnailDataUrl: fallbackThumb };
+                  }
+                  return item;
+                });
+              });
+            });
+          } else {
+            setDownloadFolderItems(prev => {
+              const exists = prev.some(item => item.filepath === filepath);
+              if (!exists) {
+                const newItem: DownloadHistoryItem = {
+                  id: safeBtoa(filepath),
+                  url: '',
+                  title: eventFilenameBase,
+                  filename: eventFilename,
+                  filepath: filepath,
+                  type: eventExt.match(/^(MP3|M4A|OGG|FLAC|WAV)$/i) ? 'audio' : 'video',
+                  ext: extFromMemory,
+                  completedAt: Date.now(),
+                  sizeLabel: sizeFromMemory,
+                  format: eventExt.match(/^(MP3|M4A|OGG|FLAC|WAV)$/i) ? 'audio' : 'video',
+                  quality: qualityFromMemory,
+                  thumbnailDataUrl: thumb || undefined,
+                };
+                return [newItem, ...prev];
+              }
+              
+              return prev.map(item => {
+                if (item.filepath === filepath && !item.thumbnailDataUrl && thumb) {
+                  return { ...item, thumbnailDataUrl: thumb };
+                }
+                return item;
+              });
+            });
+          }
         });
 
         setDownloadHistory(prev => {
@@ -210,6 +296,28 @@ export default function App() {
         .catch(() => {});
     }
   }, [currentScreen, downloadHistory.length, saveHistoryToBackend]);
+
+  useEffect(() => {
+    if (currentScreen === 'downloads') {
+      const loadMissingThumbnails = async () => {
+        const itemsToLoad = downloadHistory.slice(0, 10);
+        
+        for (const item of itemsToLoad) {
+          if (!item.thumbnailDataUrl && item.filepath) {
+            const filepathWithoutExt = item.filepath.replace(/\.[^.]+$/, '');
+            const thumb = await loadThumbnail(filepathWithoutExt + '.jpg');
+            if (thumb) {
+              setDownloadHistory(prev => prev.map(h => 
+                h.id === item.id ? { ...h, thumbnailDataUrl: thumb } : h
+              ));
+            }
+          }
+        }
+      };
+      
+      loadMissingThumbnails();
+    }
+  }, [currentScreen]);
 
   const [isPaused, setIsPaused] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);

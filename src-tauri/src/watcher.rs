@@ -25,24 +25,19 @@ fn get_all_files_in_folder(folder: &PathBuf) -> Vec<String> {
 
 #[tauri::command]
 pub fn start_file_watcher(app: AppHandle, path: String) -> Result<(), String> {
-    info!("[Watcher] start_file_watcher called with path: {}", path);
-    
     let watch_path = PathBuf::from(&path);
 
     if !watch_path.exists() {
-        info!("[Watcher] Path does not exist: {}", path);
         return Err("Caminho não existe".to_string());
     }
 
     let current_files = get_all_files_in_folder(&watch_path);
-    info!("[Watcher] Current files in folder: {} files", current_files.len());
+    info!("File watcher started with {} files", current_files.len());
     let known_files: HashSet<String> = current_files.iter().cloned().collect();
     
     let app_clone = app.clone();
     let watch_path_clone = watch_path.clone();
     
-    info!("[Watcher] Starting polling watch: {:?}", watch_path);
-
     std::thread::spawn(move || {
         let mut known = known_files;
         
@@ -54,7 +49,6 @@ pub fn start_file_watcher(app: AppHandle, path: String) -> Result<(), String> {
             
             for file_path in &known {
                 if !current_set.contains(file_path) {
-                    info!("[Watcher] File deleted: {}", file_path);
                     let event_msg = FileChangeEvent {
                         filepath: file_path.clone(),
                         action: "deleted".to_string(),
@@ -65,7 +59,6 @@ pub fn start_file_watcher(app: AppHandle, path: String) -> Result<(), String> {
             
             for file_path in &current_set {
                 if !known.contains(file_path) {
-                    info!("[Watcher] File restored: {}", file_path);
                     let event_msg = FileChangeEvent {
                         filepath: file_path.clone(),
                         action: "restored".to_string(),

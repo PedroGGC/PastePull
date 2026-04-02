@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::{debug, error, info};
 use uuid::Uuid;
@@ -590,6 +592,7 @@ pub fn scan_download_folder(folder_path: String) -> Result<Vec<HistoryEntry>, St
 
     let mut items = Vec::new();
     let audio_exts = vec!["mp3", "flac", "aac", "wav", "ogg", "m4a", "opus"];
+    let valid_media_exts = vec!["mp4", "mkv", "avi", "mov", "webm", "flv", "m4v", "ts", "mp3", "flac", "aac", "wav", "ogg", "m4a", "opus"];
 
     if let Ok(entries) = std::fs::read_dir(&path) {
         for entry in entries.flatten() {
@@ -601,13 +604,10 @@ pub fn scan_download_folder(folder_path: String) -> Result<Vec<HistoryEntry>, St
             let filename = entry_path.file_name().unwrap_or_default().to_string_lossy().to_string();
             let ext = entry_path.extension().unwrap_or_default().to_string_lossy().to_string().to_lowercase();
 
-            // Only include valid media files - everything else is temp/thumbnail
-            let valid_media_exts = vec!["mp4", "mkv", "avi", "mov", "webm", "flv", "m4v", "ts", "mp3", "flac", "aac", "wav", "ogg", "m4a", "opus"];
             if !valid_media_exts.contains(&ext.as_str()) {
                 continue;
             }
 
-            // Skip files with temp patterns in name (yt-dlp fragments, partial downloads, etc)
             let lower_filename = filename.to_lowercase();
             if lower_filename.contains(".fhls-") || 
                lower_filename.contains(".fdash-") ||
@@ -659,6 +659,29 @@ pub fn scan_download_folder(folder_path: String) -> Result<Vec<HistoryEntry>, St
     }
 
     items.sort_by(|a, b| b.completed_at.cmp(&a.completed_at));
+
+    // Load thumbnails for top 10 most recent files
+    let max_thumbnails = 10;
+    for (i, item) in items.iter_mut().enumerate() {
+        if i >= max_thumbnails {
+            break;
+        }
+
+        if let Some(parent) = PathBuf::from(&item.filepath).parent() {
+            if let Some(stem) = PathBuf::from(&item.filepath).file_stem() {
+                let thumb_filename = format!("{}.jpg", stem.to_string_lossy());
+                let thumb_path = parent.join(&thumb_filename);
+                
+                if thumb_path.exists() {
+                    if let Ok(data) = std::fs::read(&thumb_path) {
+                        let base64 = crate::utils::base64_encode(&data);
+                        item.thumbnail_data_url = Some(format!("data:image/jpeg;base64,{}", base64));
+                    }
+                }
+            }
+        }
+    }
+
     Ok(items)
 }
 
@@ -696,117 +719,60 @@ pub fn load_history(app: AppHandle) -> Result<Vec<HistoryEntry>, String> {
 }
 
 #[tauri::command]
-pub fn move_to_trash(filepath: String) -> Result<(), String> {
-    let path = PathBuf::from(&filepath);
-    if !path.exists() {
-        return Err("Arquivo não encontrado".to_string());
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::process::Command;
-        
-        // Mover arquivo principal
-        let output = Command::new("powershell")
-            .args([
-                "-Command",
-                &format!(
-                    "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('{}', 'OnlyErrorDialogs', 'SendToRecycleBin')",
-                    filepath.replace("'", "''")
-                ),
-            ])
-            .output()
-            .map_err(|e| e.to_string())?;
-
-        if !output.status.success() {
-            let err = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("Erro ao mover para lixeira: {}", err));
-        }
-
-        // Derive and move thumbnail (same name, .jpg extension)
-        if let Some(parent) = path.parent() {
-            if let Some(stem) = path.file_stem() {
-                let thumb_filename = format!("{}.jpg", stem.to_string_lossy());
-                let thumb_path = parent.join(&thumb_filename);
-                
-                if thumb_path.exists() {
-                    let thumb_str = thumb_path.to_string_lossy().to_string();
-                    let _ = Command::new("powershell")
-                        .args([
-                            "-Command",
-                            &format!(
-                                "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('{}', 'OnlyErrorDialogs', 'SendToRecycleBin')",
-                                thumb_str.replace("'", "''")
-                            ),
-                        ])
-                        .output();
-                }
-            }
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        return Err("Esta funcionalidade só está disponível no Windows".to_string());
-    }
-
-    Ok(())
-}
-
-#[tauri::command]
 pub fn move_multiple_to_trash(paths: Vec<String>) -> Result<(), String> {
+    info!("Moving {} file(s) to trash", paths.len());
+    
     #[cfg(target_os = "windows")]
     {
-        use std::process::Command;
-        
-        let mut all_files: Vec<String> = Vec::new();
+        let mut thumbnails_to_check: Vec<(PathBuf, String)> = Vec::new();
         
         for filepath in &paths {
             let path = PathBuf::from(filepath);
-            all_files.push(filepath.clone());
             
+            let ps_command = format!(
+                "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('{}', 'OnlyErrorDialogs', 'SendToRecycleBin')",
+                filepath.replace("'", "''")
+            );
+            
+            let mut cmd = std::process::Command::new("powershell.exe");
+            cmd.args(["-WindowStyle", "Hidden", "-Command", &ps_command]);
+            #[cfg(target_os = "windows")]
+            cmd.creation_flags(0x08000000);
+            let _ = cmd.spawn();
+            
+            std::thread::sleep(std::time::Duration::from_millis(2000));
+
             if let Some(parent) = path.parent() {
                 if let Some(stem) = path.file_stem() {
-                    let thumb_filename = format!("{}.jpg", stem.to_string_lossy());
-                    let thumb_path = parent.join(&thumb_filename);
-                    if thumb_path.exists() {
-                        all_files.push(thumb_path.to_string_lossy().to_string());
-                    }
+                    thumbnails_to_check.push((parent.to_path_buf(), stem.to_string_lossy().to_string()));
                 }
             }
         }
         
-        if all_files.is_empty() {
-            return Ok(());
-        }
-        
-        let files_array = all_files
-            .iter()
-            .map(|f| format!("'{}'", f.replace("'", "''")))
-            .collect::<Vec<_>>()
-            .join(", ");
-        
-        let ps_script = format!(
-            r#"
-$files = @({})
-foreach ($f in $files) {{
-    if (Test-Path $f) {{
-        Add-Type -AssemblyName Microsoft.VisualBasic
-        [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($f, 'OnlyErrorDialogs', 'SendToRecycleBin')
-    }}
-}}
-"#,
-            files_array
-        );
-        
-        let output = Command::new("powershell")
-            .args(["-Command", &ps_script])
-            .output()
-            .map_err(|e| e.to_string())?;
-
-        if !output.status.success() {
-            let err = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("Erro ao mover para lixeira: {}", err));
+        for (parent, stem) in thumbnails_to_check {
+            let thumb_filename = format!("{}.jpg", stem);
+            let thumb_path = parent.join(&thumb_filename);
+            
+            if thumb_path.exists() {
+                let has_others = crate::utils::has_other_media_files_without_exclude(&parent, &stem);
+                
+                if !has_others {
+                    let thumb_str = thumb_path.to_string_lossy().to_string();
+                    let thumb_ps_command = format!(
+                        "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('{}', 'OnlyErrorDialogs', 'SendToRecycleBin')",
+                        thumb_str.replace("'", "''")
+                    );
+                    
+                    let mut thumb_cmd = std::process::Command::new("powershell.exe");
+                    thumb_cmd.args(["-WindowStyle", "Hidden", "-Command", &thumb_ps_command]);
+                    #[cfg(target_os = "windows")]
+                    thumb_cmd.creation_flags(0x08000000);
+                    let _ = thumb_cmd.spawn();
+                    
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    info!("Thumbnail moved to trash: {}", thumb_str);
+                }
+            }
         }
     }
 
@@ -815,5 +781,6 @@ foreach ($f in $files) {{
         return Err("Esta funcionalidade só está disponível no Windows".to_string());
     }
 
+    info!("Move to trash completed");
     Ok(())
 }

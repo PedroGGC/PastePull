@@ -79,3 +79,50 @@ pub fn find_available_browser() -> Option<String> {
     }
     None
 }
+
+fn is_media_extension(ext: &str) -> bool {
+    matches!(ext.to_lowercase().as_str(),
+        "mp4" | "mkv" | "avi" | "mov" | "webm" | "flv" | "m4v" | "ts" |
+        "mp3" | "flac" | "aac" | "wav" | "ogg" | "m4a" | "opus"
+    )
+}
+
+pub fn has_other_media_files(parent: &std::path::Path, stem: &str, exclude_path: &str) -> bool {
+    let mut found_count = 0;
+    
+    if let Ok(entries) = std::fs::read_dir(parent) {
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            if !entry_path.is_file() {
+                continue;
+            }
+            
+            let entry_str = entry_path.to_string_lossy().to_string();
+            
+            if !exclude_path.is_empty() && entry_str == exclude_path {
+                continue;
+            }
+            
+            if let Some(ext) = entry_path.extension() {
+                let ext_str = ext.to_string_lossy();
+                let is_media = is_media_extension(&ext_str);
+                
+                if is_media {
+                    if let Some(entry_stem) = entry_path.file_stem() {
+                        let entry_stem_str = entry_stem.to_string_lossy();
+                        
+                        if entry_stem_str == stem {
+                            found_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    found_count > 0
+}
+
+pub fn has_other_media_files_without_exclude(parent: &std::path::Path, stem: &str) -> bool {
+    has_other_media_files(parent, stem, "")
+}

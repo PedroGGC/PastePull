@@ -76,7 +76,7 @@ pub fn build_ytdlp_args(
         "--no-colors".to_string(),
     ];
 
-    let mut is_audio_only = false;
+    let is_audio_only = false;
     let q_str = quality.clone().unwrap_or_else(|| "".to_string());
     let ext = extension.unwrap_or_else(|| "mp3".to_string());
     let ext_lower = ext.to_lowercase();
@@ -92,7 +92,6 @@ pub fn build_ytdlp_args(
 
     match (format_val.as_str(), q_str.as_str()) {
         ("audio", _) | (_, "AUDIO ONLY") => {
-            is_audio_only = true;
             args.extend_from_slice(&[
                 "-f".to_string(),
                 "bestaudio/best".to_string(),
@@ -100,7 +99,7 @@ pub fn build_ytdlp_args(
                 "--audio-format".to_string(),
                 audio_format.to_string(),
             ]);
-            info!("[DOWNLOAD] Format: AUDIO ONLY, extension: {}", ext);
+            info!("Audio format: {}", ext);
         }
         (_, q) if q.ends_with("P VIDEO") => {
             let height = q.replace("P VIDEO", "");
@@ -110,9 +109,8 @@ pub fn build_ytdlp_args(
             ]);
             if !is_audio_only {
                 args.extend_from_slice(&["--merge-output-format".to_string(), ext_lower.clone()]);
-                info!("[DOWNLOAD] Merge output format: {}", ext_lower);
             }
-            info!("[DOWNLOAD] Format: {} (height={})", q_str, height);
+            info!("Video format: {} (height={})", q_str, height);
         }
         _ => {
             args.extend_from_slice(&[
@@ -121,13 +119,10 @@ pub fn build_ytdlp_args(
             ]);
             if !is_audio_only {
                 args.extend_from_slice(&["--merge-output-format".to_string(), ext_lower.clone()]);
-                info!("[DOWNLOAD] Merge output format: {}", ext_lower);
             }
-            info!("[DOWNLOAD] Format: BEST QUALITY");
+            info!("Format: best quality");
         }
     }
-
-    info!("[DOWNLOAD] Full args: {:?}", args);
 
     if use_cookies {
         args.extend_from_slice(&["--cookies-from-browser".to_string(), browser_arg]);
@@ -180,11 +175,8 @@ pub fn spawn_download_thread(
             if let Ok(file) = File::open(&stderr_path_clone) {
                 let reader = BufReader::new(file);
                 for line in reader.lines().flatten() {
-                    debug!("[YTDLP-ERR-{}] {}", id_clone, line);
-                    
                     // Detect conversion in stderr
                     if convert_re.is_match(&line) {
-                        info!("[YTDLP-ERR-{}] Conversion detected in stderr: {}", id_clone, line);
                         let mut s = state_for_stderr.lock().unwrap();
                         if let Some(h) = s.get_mut(&id_clone) {
                             h.last_progress = Some(DownloadProgress {
@@ -358,7 +350,7 @@ pub fn spawn_download_thread(
                             
                             // Detect audio conversion in any output line
                             if convert_re.is_match(&line) && last_progress.status != "converting" {
-                                info!("[YTDLP-{}] Audio conversion detected: {}", id_clone_2, line);
+                                info!("Audio conversion detected: {}", line);
                                 last_progress.status = "converting".to_string();
                                 last_progress.percent = 99.0;
                                 
@@ -407,7 +399,7 @@ pub fn spawn_download_thread(
             
             // Add delay for audio files to allow FFmpeg to finish conversion
             if is_audio_download && ok {
-                info!("[YTDLP-{}] Audio download completed, waiting for FFmpeg conversion...", id_clone_2);
+                info!("Audio download completed, waiting for FFmpeg conversion...");
                 thread::sleep(std::time::Duration::from_secs(4));
                 
                 // Check if still converting
@@ -416,7 +408,6 @@ pub fn spawn_download_thread(
                     if let Some(h) = s.get(&id_clone_2) {
                         if let Some(ref progress) = h.last_progress {
                             if progress.status == "converting" {
-                                info!("[YTDLP-{}] Still converting, waiting additional 2s...", id_clone_2);
                                 drop(s);
                                 thread::sleep(std::time::Duration::from_secs(2));
                             }
@@ -483,9 +474,6 @@ pub fn spawn_download_thread(
                         let ext_lower = ext.to_lowercase();
                         let correct_path = format!("{}/{}.{}", output_dir, filename_stem_owned, ext_lower);
                         
-                        // ALWAYS correct - don't check if file exists
-                        info!("[YTDLP-{}] Correcting output_path: {} -> {}", 
-                            id_clone_2, last_progress.output_path, correct_path);
                         last_progress.output_path = correct_path.clone();
                         last_progress.filename = format!("{}.{}", filename_stem_owned, ext_lower);
                     }
