@@ -3,6 +3,8 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+use once_cell::sync::Lazy;
+use regex::Regex;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::{debug, error, info};
 use uuid::Uuid;
@@ -10,8 +12,11 @@ use uuid::Uuid;
 use crate::downloader::{build_ytdlp_args, spawn_download_thread};
 use crate::process::{kill_process_tree, resume_process, suspend_process};
 use crate::types::{DownloadProgress, DownloadHandle, HistoryEntry, SharedDownloadState};
-use crate::utils::{ascii_alphanum, normalize_title};
+use crate::utils::normalize_title;
 use tauri_plugin_dialog::DialogExt;
+
+static ORPHAN_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.f\d+\.\w+$").unwrap());
+static FORMAT_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"\.f\d+").unwrap());
 
 #[tauri::command]
 pub async fn start_download(
@@ -176,8 +181,7 @@ pub async fn cancel_download(
                     .unwrap_or_default()
                     .to_string_lossy()
                     .to_string();
-                let format_re = regex::Regex::new(r"\.f\d+").unwrap();
-                let mut ps = format_re.replace(&filename_full, "").to_string();
+                let mut ps = FORMAT_REGEX.replace(&filename_full, "").to_string();
                 if let Some(pos) = ps.rfind('.') {
                     ps.truncate(pos);
                 }
@@ -204,12 +208,10 @@ pub async fn cancel_download(
                         || filename.ends_with(".ytdl")
                         || filename.ends_with(".jpg")
                         || filename.ends_with(".webp")
-                        || regex::Regex::new(r"\.f\d+\.\w+$")
-                            .unwrap()
-                            .is_match(&filename);
+                        || ORPHAN_REGEX.is_match(&filename);
 
                     if is_related && is_temp {
-                        for _attempt in 0..5 {
+                        for _attempt in 0..3 {
                             if std::fs::remove_file(&path).is_ok() {
                                 debug!("Removed orphan file: {}", filename);
                                 break;
@@ -345,377 +347,72 @@ pub async fn get_video_metadata(app: AppHandle, url: String) -> Result<String, S
 }
 
 #[tauri::command]
+pub fn check_files_exist(paths: Vec<String>) -> Vec<bool> {
+    crate::file_ops::check_files_exist(paths)
+}
+
+#[tauri::command]
 pub fn open_folder_natively(path: String) {
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("explorer").arg(&path).spawn();
-    }
+    crate::file_ops::open_folder_natively(path)
 }
 
 #[tauri::command]
 pub fn find_file_by_title(dir: String, title: String, extension: Option<String>) -> bool {
-    let title_norm = ascii_alphanum(&title);
-    if title_norm.len() < 8 {
-        return false;
-    }
-    let threshold = (title_norm.len() * 4 / 5).max(10);
-
-    let ext_requested = extension
-        .map(|e| e.to_lowercase())
-        .unwrap_or_default();
-
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return false;
-    };
-
-    for entry in entries.filter_map(|e| e.ok()) {
-        let fname = entry.file_name();
-        let fname_str = fname.to_string_lossy();
-        let ext = PathBuf::from(fname_str.as_ref())
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-        if matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "webp" | "gif") {
-            continue;
-        }
-        let file_stem = PathBuf::from(fname_str.as_ref())
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-        let file_norm = ascii_alphanum(&file_stem);
-
-        let common = title_norm.chars().zip(file_norm.chars()).take_while(|(a, b)| a == b).count();
-
-        if common >= threshold {
-            if !ext_requested.is_empty() && ext != ext_requested {
-                continue;
-            }
-            return true;
-        }
-    }
-    false
-}
-
-#[tauri::command]
-pub fn read_thumbnail_as_base64(path: String) -> Result<String, String> {
-    let file_path = PathBuf::from(&path);
-
-    if file_path.exists() {
-        let data = std::fs::read(&path).map_err(|e| e.to_string())?;
-        let base64 = crate::utils::base64_encode(&data);
-        let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("jpg");
-        let mime = match ext {
-            "png" => "image/png",
-            "gif" => "image/gif",
-            "webp" => "image/webp",
-            _ => "image/jpeg",
-        };
-        return Ok(format!("data:{};base64,{}", mime, base64));
-    }
-
-    if let Some(parent) = file_path.parent() {
-        let stem = file_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        let stem_norm = ascii_alphanum(stem);
-
-        if let Ok(entries) = std::fs::read_dir(parent) {
-            let mut best_match: Option<(usize, PathBuf)> = None;
-
-            for entry in entries.filter_map(|e| e.ok()) {
-                let fname = entry.file_name();
-                let fname_str = fname.to_string_lossy();
-                let low = fname_str.to_lowercase();
-                if !low.ends_with(".jpg")
-                    && !low.ends_with(".jpeg")
-                    && !low.ends_with(".webp")
-                    && !low.ends_with(".png")
-                {
-                    continue;
-                }
-                let file_stem = PathBuf::from(fname_str.as_ref())
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                let file_norm = ascii_alphanum(&file_stem);
-
-                let common = stem_norm
-                    .chars()
-                    .zip(file_norm.chars())
-                    .take_while(|(a, b)| a == b)
-                    .count();
-
-                if common > best_match.as_ref().map(|(n, _)| *n).unwrap_or(0) {
-                    best_match = Some((common, entry.path()));
-                }
-            }
-
-            if let Some((score, matched_path)) = best_match {
-                if score >= 10 {
-                    let data = std::fs::read(&matched_path).map_err(|e| e.to_string())?;
-                    let base64 = crate::utils::base64_encode(&data);
-                    return Ok(format!("data:image/jpeg;base64,{}", base64));
-                }
-            }
-        }
-    }
-
-    Err(format!("Thumbnail não encontrada: {}", path))
-}
-
-#[tauri::command]
-pub fn check_files_exist(paths: Vec<String>) -> Vec<bool> {
-    paths.into_iter()
-        .map(|p| PathBuf::from(&p).exists())
-        .collect()
+    crate::file_ops::find_file_by_title(dir, title, extension)
 }
 
 #[tauri::command]
 pub fn resolve_paths(paths: Vec<String>) -> Vec<Option<String>> {
-    use crate::utils::ascii_alphanum;
-    
-    paths.into_iter()
-        .map(|p| {
-            let path = PathBuf::from(&p);
-            if path.exists() {
-                return Some(p);
-            }
+    crate::file_ops::resolve_paths(paths)
+}
 
-            if let (Some(parent), Some(filename)) = (path.parent(), path.file_name()) {
-                let filename_str = filename.to_string_lossy();
-                let file_stem = filename_str
-                    .rsplit('.')
-                    .last()
-                    .unwrap_or(&filename_str)
-                    .to_string();
-                let target_norm = ascii_alphanum(&file_stem);
-                let target_ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+#[tauri::command]
+pub fn read_thumbnail_as_base64(path: String) -> Result<String, String> {
+    crate::thumbnail_ops::read_thumbnail_as_base64(path)
+}
 
-                if target_norm.len() >= 5 {
-                    if let Ok(entries) = std::fs::read_dir(parent) {
-                        let mut best_match: Option<(usize, String)> = None;
-                        for entry in entries.flatten() {
-                            let entry_path = entry.path();
-                            if !entry_path.is_file() {
-                                continue;
-                            }
-
-                            let entry_name = entry.file_name();
-                            let entry_name_str = entry_name.to_string_lossy();
-                            let entry_stem = entry_name_str
-                                .rsplit('.')
-                                .last()
-                                .unwrap_or(&entry_name_str)
-                                .to_string();
-                            let entry_norm = ascii_alphanum(&entry_stem);
-                            let entry_ext = entry_path
-                                .extension()
-                                .and_then(|e| e.to_str())
-                                .unwrap_or("")
-                                .to_lowercase();
-
-                            let ext_match = target_ext == entry_ext;
-
-                            if !ext_match {
-                                continue;
-                            }
-
-                            let common = target_norm
-                                .chars()
-                                .zip(entry_norm.chars())
-                                .take_while(|(a, b)| a == b)
-                                .count();
-
-                            let is_substring = entry_norm.contains(&target_norm) || target_norm.contains(&entry_norm);
-                            let prefix_match = common >= target_norm.len().min(entry_norm.len()).min(8) && common >= 5;
-
-                            if (prefix_match || is_substring) && common >= 5 {
-                                if common > best_match.as_ref().map(|(n, _)| *n).unwrap_or(0) {
-                                    best_match = Some((common, entry_path.to_string_lossy().to_string()));
-                                }
-                            }
-                        }
-                        if let Some((_, found_path)) = best_match {
-                            return Some(found_path);
-                        }
-                    }
-                }
-
-                let search_key = file_stem.chars().take_while(|c| !c.is_ascii_digit()).collect::<String>();
-
-                if search_key.len() >= 5 {
-                    if let Ok(entries) = std::fs::read_dir(parent) {
-                        for entry in entries.flatten() {
-                            let entry_path = entry.path();
-                            if !entry_path.is_file() {
-                                continue;
-                            }
-
-                            let entry_name = entry_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                            
-                            // Get extension and validate it matches target
-                            let entry_ext = entry_path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-                            let target_ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-                            
-                            // Only match if extensions are exactly the same
-                            // Each format (MP3, MP4, MKV, WEBM, OGG, WAV, FLAC) is treated as a separate file
-                            let ext_compatible = target_ext == entry_ext;
-                            
-                            if !ext_compatible {
-                                continue;
-                            }
-
-                            let normalized_search = search_key.to_lowercase();
-                            let normalized_entry = entry_name.to_lowercase();
-
-                            if normalized_entry.contains(&normalized_search)
-                                || normalized_search.contains(&normalized_entry.split('.').next().unwrap_or(&normalized_entry))
-                            {
-                                return Some(entry_path.to_string_lossy().to_string());
-                            }
-                        }
-                    }
-                }
-            }
-            None
-        })
-        .collect()
+#[tauri::command]
+pub fn get_file_size(path: String) -> Result<u64, String> {
+    std::fs::metadata(&path)
+        .map(|m| m.len())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn scan_download_folder(folder_path: String) -> Result<Vec<HistoryEntry>, String> {
-    let path = PathBuf::from(&folder_path);
-    if !path.exists() || !path.is_dir() {
-        return Err("Diretório não existe".to_string());
+    crate::history_ops::scan_download_folder(folder_path)
+}
+
+#[tauri::command]
+pub fn list_files_in_folder(folder_path: String) -> Result<Vec<String>, String> {
+    let path = std::path::PathBuf::from(&folder_path);
+    if !path.exists() {
+        return Err("Folder does not exist".to_string());
     }
-
-    let mut items = Vec::new();
-    let audio_exts = vec!["mp3", "flac", "aac", "wav", "ogg", "m4a", "opus"];
-    let valid_media_exts = vec!["mp4", "mkv", "avi", "mov", "webm", "flv", "m4v", "ts", "mp3", "flac", "aac", "wav", "ogg", "m4a", "opus"];
-
+    
+    let mut files = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&path) {
         for entry in entries.flatten() {
-            let entry_path = entry.path();
-            if !entry_path.is_file() {
-                continue;
-            }
-
-            let filename = entry_path.file_name().unwrap_or_default().to_string_lossy().to_string();
-            let ext = entry_path.extension().unwrap_or_default().to_string_lossy().to_string().to_lowercase();
-
-            if !valid_media_exts.contains(&ext.as_str()) {
-                continue;
-            }
-
-            let lower_filename = filename.to_lowercase();
-            if lower_filename.contains(".fhls-") || 
-               lower_filename.contains(".fdash-") ||
-               lower_filename.contains(".fmp4") ||
-               lower_filename.contains(".part") {
-                continue;
-            }
-
-            let file_type = if vec!["mp4", "mkv", "avi", "mov", "webm", "flv", "m4v", "ts"].contains(&ext.as_str()) {
-                "video"
-            } else if audio_exts.contains(&ext.as_str()) {
-                "audio"
-            } else {
-                continue;
-            };
-
-            let metadata = entry.metadata().map_err(|e| e.to_string())?;
-            let completed_at = metadata
-                .modified()
-                .unwrap_or(std::time::SystemTime::now())
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-
-            let size = metadata.len();
-            let size_label = if size >= 1024 * 1024 * 1024 {
-                format!("{:.2} GB", size as f64 / (1024.0 * 1024.0 * 1024.0))
-            } else if size >= 1024 * 1024 {
-                format!("{:.2} MB", size as f64 / (1024.0 * 1024.0))
-            } else {
-                format!("{} KB", size / 1024)
-            };
-
-            items.push(HistoryEntry {
-                id: Uuid::new_v4().to_string(),
-                title: filename.clone(),
-                filename,
-                filepath: entry_path.to_string_lossy().to_string(),
-                url: "".to_string(),
-                file_type: file_type.to_string(),
-                ext: ext.to_uppercase(),
-                completed_at,
-                size_label,
-                thumbnail_data_url: None,
-                format: "".to_string(),
-                quality: "".to_string(),
-            });
-        }
-    }
-
-    items.sort_by(|a, b| b.completed_at.cmp(&a.completed_at));
-
-    // Load thumbnails for top 10 most recent files
-    let max_thumbnails = 10;
-    for (i, item) in items.iter_mut().enumerate() {
-        if i >= max_thumbnails {
-            break;
-        }
-
-        if let Some(parent) = PathBuf::from(&item.filepath).parent() {
-            if let Some(stem) = PathBuf::from(&item.filepath).file_stem() {
-                let thumb_filename = format!("{}.jpg", stem.to_string_lossy());
-                let thumb_path = parent.join(&thumb_filename);
-                
-                if thumb_path.exists() {
-                    if let Ok(data) = std::fs::read(&thumb_path) {
-                        let base64 = crate::utils::base64_encode(&data);
-                        item.thumbnail_data_url = Some(format!("data:image/jpeg;base64,{}", base64));
-                    }
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(name) = path.file_name() {
+                    files.push(name.to_string_lossy().to_string());
                 }
             }
         }
     }
-
-    Ok(items)
+    
+    Ok(files)
 }
 
 #[tauri::command]
-pub fn save_history(app: AppHandle, mut items: Vec<HistoryEntry>) -> Result<(), String> {
-    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let history_dir = app_data.join("persistence");
-    if !history_dir.exists() {
-        std::fs::create_dir_all(&history_dir).map_err(|e| e.to_string())?;
-    }
-    let history_file = history_dir.join("history.json");
-
-    items.sort_by(|a, b| b.completed_at.cmp(&a.completed_at));
-    if items.len() > 100 {
-        items.truncate(100);
-    }
-
-    let json = serde_json::to_string_pretty(&items).map_err(|e| e.to_string())?;
-    std::fs::write(history_file, json).map_err(|e| e.to_string())?;
-    Ok(())
+pub fn save_history(app: AppHandle, items: Vec<HistoryEntry>) -> Result<(), String> {
+    crate::history_ops::save_history(app, items)
 }
 
 #[tauri::command]
 pub fn load_history(app: AppHandle) -> Result<Vec<HistoryEntry>, String> {
-    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let history_file = app_data.join("persistence").join("history.json");
-
-    if !history_file.exists() {
-        return Ok(Vec::new());
-    }
-
-    let json = std::fs::read_to_string(history_file).map_err(|e| e.to_string())?;
-    let items: Vec<HistoryEntry> = serde_json::from_str(&json).map_err(|e| e.to_string())?;
-    Ok(items)
+    crate::history_ops::load_history(app)
 }
 
 #[tauri::command]
@@ -724,14 +421,25 @@ pub fn move_multiple_to_trash(paths: Vec<String>) -> Result<(), String> {
     
     #[cfg(target_os = "windows")]
     {
-        let mut thumbnails_to_check: Vec<(PathBuf, String)> = Vec::new();
+        // First, collect all stems from paths being deleted
+        let mut stems_to_delete: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut escaped_paths: Vec<String> = Vec::new();
         
         for filepath in &paths {
             let path = PathBuf::from(filepath);
-            
+            if let Some(stem) = path.file_stem() {
+                let stem_str = stem.to_string_lossy().to_lowercase();
+                *stems_to_delete.entry(stem_str).or_insert(0) += 1;
+            }
+            escaped_paths.push(filepath.replace("'", "''"));
+        }
+        
+        // Delete all main files in a SINGLE PowerShell command
+        if !escaped_paths.is_empty() {
+            let files_array = escaped_paths.join("','");
             let ps_command = format!(
-                "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('{}', 'OnlyErrorDialogs', 'SendToRecycleBin')",
-                filepath.replace("'", "''")
+                "Add-Type -AssemblyName Microsoft.VisualBasic; @('{}') | ForEach-Object {{ [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($_, 'OnlyErrorDialogs', 'SendToRecycleBin') }}",
+                files_array
             );
             
             let mut cmd = std::process::Command::new("powershell.exe");
@@ -740,8 +448,18 @@ pub fn move_multiple_to_trash(paths: Vec<String>) -> Result<(), String> {
             cmd.creation_flags(0x08000000);
             let _ = cmd.spawn();
             
-            std::thread::sleep(std::time::Duration::from_millis(2000));
-
+            info!("Moved {} file(s) to trash", paths.len());
+        }
+        
+        // Wait longer for all files to be fully deleted
+        std::thread::sleep(std::time::Duration::from_millis(3500));
+        info!("Finished waiting for file deletions");
+        
+        // Now check and delete orphaned thumbnails
+        let mut thumbnails_to_check: Vec<(PathBuf, String)> = Vec::new();
+        
+        for filepath in &paths {
+            let path = PathBuf::from(filepath);
             if let Some(parent) = path.parent() {
                 if let Some(stem) = path.file_stem() {
                     thumbnails_to_check.push((parent.to_path_buf(), stem.to_string_lossy().to_string()));
@@ -750,27 +468,66 @@ pub fn move_multiple_to_trash(paths: Vec<String>) -> Result<(), String> {
         }
         
         for (parent, stem) in thumbnails_to_check {
-            let thumb_filename = format!("{}.jpg", stem);
-            let thumb_path = parent.join(&thumb_filename);
+            let stem_lower = stem.to_lowercase();
+            let count_being_deleted = stems_to_delete.get(&stem_lower).copied().unwrap_or(0);
             
-            if thumb_path.exists() {
-                let has_others = crate::utils::has_other_media_files_without_exclude(&parent, &stem);
+            info!("Checking thumbnail for stem: {} (deleting {} files with this stem)", stem, count_being_deleted);
+            
+            // Check for common image extensions
+            let image_exts = ["jpg", "jpeg", "png", "webp", "gif", "bmp"];
+            
+            for ext in &image_exts {
+                let thumb_filename = format!("{}.{}", stem, ext);
+                let thumb_path = parent.join(&thumb_filename);
                 
-                if !has_others {
-                    let thumb_str = thumb_path.to_string_lossy().to_string();
-                    let thumb_ps_command = format!(
-                        "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('{}', 'OnlyErrorDialogs', 'SendToRecycleBin')",
-                        thumb_str.replace("'", "''")
-                    );
+                if thumb_path.exists() {
+                    info!("Thumbnail exists: {:?}", thumb_path);
                     
-                    let mut thumb_cmd = std::process::Command::new("powershell.exe");
-                    thumb_cmd.args(["-WindowStyle", "Hidden", "-Command", &thumb_ps_command]);
-                    #[cfg(target_os = "windows")]
-                    thumb_cmd.creation_flags(0x08000000);
-                    let _ = thumb_cmd.spawn();
+                    // Count total media files with same stem in folder (excluding images)
+                    let mut total_in_folder = 0usize;
+                    let image_exts = ["jpg", "jpeg", "png", "webp", "gif", "bmp"];
+                    if let Ok(entries) = std::fs::read_dir(&parent) {
+                        for entry in entries.flatten() {
+                            let entry_path = entry.path();
+                            // Skip image files (thumbnails)
+                            if let Some(ext) = entry_path.extension() {
+                                let ext_str = ext.to_string_lossy().to_lowercase();
+                                if image_exts.contains(&ext_str.as_str()) {
+                                    continue;
+                                }
+                            }
+                            if let Some(entry_stem) = entry_path.file_stem() {
+                                let entry_stem_str = entry_stem.to_string_lossy().to_lowercase();
+                                if entry_stem_str == stem_lower {
+                                    total_in_folder += 1;
+                                }
+                            }
+                        }
+                    }
                     
-                    std::thread::sleep(std::time::Duration::from_millis(300));
-                    info!("Thumbnail moved to trash: {}", thumb_str);
+                    info!("Total media files with stem '{}' in folder: {}", stem_lower, total_in_folder);
+                    
+                    // Only delete thumbnail if all media files with this stem are being deleted
+                    if total_in_folder <= count_being_deleted {
+                        let thumb_str = thumb_path.to_string_lossy().to_string();
+                        let thumb_ps_command = format!(
+                            "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('{}', 'OnlyErrorDialogs', 'SendToRecycleBin')",
+                            thumb_str.replace("'", "''")
+                        );
+                        
+                        let mut thumb_cmd = std::process::Command::new("powershell.exe");
+                        thumb_cmd.args(["-WindowStyle", "Hidden", "-Command", &thumb_ps_command]);
+                        #[cfg(target_os = "windows")]
+                        thumb_cmd.creation_flags(0x08000000);
+                        let _ = thumb_cmd.spawn();
+                        
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+                        info!("Thumbnail moved to trash: {}", thumb_str);
+                        break;
+                    } else {
+                        info!("Not deleting thumbnail - {} files with same stem exist but only {} being deleted", total_in_folder, count_being_deleted);
+                    }
+                    break;
                 }
             }
         }

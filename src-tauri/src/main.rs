@@ -5,7 +5,10 @@
 
 mod commands;
 mod downloader;
+mod file_ops;
+mod history_ops;
 mod process;
+mod thumbnail_ops;
 mod types;
 mod utils;
 mod watcher;
@@ -16,7 +19,7 @@ use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use commands::{
-    cancel_download, check_files_exist, get_video_metadata, load_history,
+    cancel_download, check_files_exist, get_file_size, get_video_metadata, list_files_in_folder, load_history,
     move_multiple_to_trash, open_folder_natively, pause_download, read_thumbnail_as_base64, resolve_paths, save_history,
     scan_download_folder, select_download_folder, start_download, find_file_by_title,
 };
@@ -46,6 +49,8 @@ fn main() {
             open_folder_natively,
             find_file_by_title,
             read_thumbnail_as_base64,
+            get_file_size,
+            list_files_in_folder,
             check_files_exist,
             resolve_paths,
             move_multiple_to_trash,

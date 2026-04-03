@@ -75,7 +75,7 @@ export function RecentActivity({
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-white/90 truncate">{item.title}</p>
                 <div className="flex items-center gap-2 mt-0.5">
-                  {item.isMissing ? (
+                  {item.status === 'deleted' ? (
                     <span className="text-[10px] font-bold text-red-400/80 uppercase tracking-wider">
                       {t('Missing', 'Removido')}
                     </span>
@@ -88,7 +88,7 @@ export function RecentActivity({
                 </div>
               </div>
               <div className="flex items-center gap-1">
-                {item.isMissing && (
+                {item.status === 'deleted' && (
                   <button 
                     onClick={() => onRedownload(item)}
                     className="px-3 py-1.5 rounded-lg bg-yellow-400/10 hover:bg-yellow-400/20 text-yellow-500 text-[10px] font-bold transition-all uppercase tracking-wider"

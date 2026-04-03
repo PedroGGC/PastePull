@@ -32,7 +32,7 @@ export interface DownloadHistoryItem {
   thumbnailDataUrl?: string;
   format: string;
   quality: string;
-  isMissing?: boolean;
+  status: 'active' | 'deleted';
 }
 
 export interface Settings {

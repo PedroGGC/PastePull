@@ -46,7 +46,7 @@
   },
   "productName": "PastePull",
   "mainBinaryName": "PastePull",
-  "version": "1.0.2",
+  "version": "1.2.0",
   "identifier": "com.lux.universaldownloader",
   "plugins": {},
   "app": {

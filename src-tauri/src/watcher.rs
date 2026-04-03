@@ -41,7 +41,7 @@ pub fn start_file_watcher(app: AppHandle, path: String) -> Result<(), String> {
     std::thread::spawn(move || {
         let mut known = known_files;
         
-        loop {
+loop {
             std::thread::sleep(Duration::from_secs(2));
             
             let current_files = get_all_files_in_folder(&watch_path_clone);
@@ -66,7 +66,7 @@ pub fn start_file_watcher(app: AppHandle, path: String) -> Result<(), String> {
                     let _ = app_clone.emit("file-changed", event_msg);
                 }
             }
-            
+             
             known = current_set;
         }
     });

@@ -23,7 +23,7 @@ import { useMediaAnalyzer } from './hooks/useMediaAnalyzer';
 import { useDownloadProgress } from './hooks/useDownloadProgress';
 import { DownloadProgress, DownloadHistoryItem, Settings as SettingsType } from './types';
 import { t } from './utils/i18n';
-import { safeBtoa, normalizeFileName, normalizeFilepath, isTempFile } from './utils/helpers';
+import { safeBtoa, normalizeFileName, normalizeFilepath } from './utils/helpers';
 
 export default function App() {
   const [currentScreen, setCurrentScreen] = useState<'search' | 'downloads' | 'settings'>('search');
@@ -31,6 +31,11 @@ export default function App() {
   const [sortOrder, setSortOrder] = useState<'newest' | 'oldest'>('newest');
   const [isDownloading, setIsDownloading] = useState(false);
   const [showArchive, setShowArchive] = useState(false);
+  
+  useEffect(() => {
+    setSelectedItems([]);
+  }, [showArchive]);
+  
   const [url, setUrl] = useState('');
   const [currentProgress, setCurrentProgress] = useState<Record<string, DownloadProgress>>({});
   const [cancelingId, setCancelingId] = useState<string | null>(null);
@@ -63,26 +68,29 @@ export default function App() {
     return { theme: 'dark', soundEnabled: false, desktopNotification: false, maxDownloads: 3 };
   });
 
-  const [downloadHistory, setDownloadHistory] = useState<DownloadHistoryItem[]>([]);
-  const [downloadFolderItems, setDownloadFolderItems] = useState<DownloadHistoryItem[]>([]);
+  const [downloadItems, setDownloadItems] = useState<DownloadHistoryItem[]>([]);
+  const downloadItemsRef = useRef<DownloadHistoryItem[]>(downloadItems);
+  const activeDownloadsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    downloadItemsRef.current = downloadItems;
+  }, [downloadItems]);
 
   const thumbnailCache = useRef<Record<string, string>>({});
 
   useEffect(() => {
     invoke<DownloadHistoryItem[]>('load_history')
       .then(items => {
-        setDownloadHistory(items);
-        
         const savedPath = localStorage.getItem('ud_download_path');
         if (savedPath) {
           invoke('start_file_watcher', { path: savedPath })
             .catch((err) => console.error('[FileWatcher] Failed to start:', err));
           
-          invoke<DownloadHistoryItem[]>('scan_download_folder', { folderPath: savedPath })
-            .then(folderItems => {
-              setDownloadFolderItems(folderItems);
-            })
-            .catch(err => console.error('[Scan] Failed:', err));
+          // NÃO roda scan para adicionar ao histórico
+          // O histórico vem apenas do history.json + file watcher cuida de tempo real
+          setDownloadItems(items);
+        } else {
+          setDownloadItems(items);
         }
       })
       .catch(err => console.error('[History] Load failed:', err));
@@ -118,33 +126,51 @@ export default function App() {
 
   useEffect(() => {
     const unlisten = listen<{ filepath: string; action: string }>('file-changed', (event) => {
-      const { filepath, action } = event.payload;
+const { filepath, action } = event.payload;
+       
+      const fileDir = filepath.substring(0, Math.max(filepath.lastIndexOf('/'), filepath.lastIndexOf('\\')) + 1);
+      const normalizedFileDir = fileDir.endsWith('\\') ? fileDir : fileDir + '\\';
       
-      if (isTempFile(filepath)) {
-        return;
+      if (action !== 'restored') {
+        if (activeDownloadsRef.current.has(normalizedFileDir)) {
+          return;
+        }
+        
+        const isUnderActiveDir = [...activeDownloadsRef.current].some(activeDir => 
+          normalizedFileDir.startsWith(activeDir) || normalizedFileDir.includes(activeDir.replace(/\\$/, ''))
+        );
+        if (isUnderActiveDir) {
+          return;
+        }
       }
       
-      const eventFilename = filepath.split(/[\\/]/).pop() || '';
+const eventFilename = filepath.split(/[\\/]/).pop() || '';
       const eventFilenameBase = eventFilename.replace(/\.[^.]+$/, ''); 
       const eventExt = eventFilename.split('.').pop()?.toUpperCase() || '';
 
       if (action === 'deleted') {
-        const existingItem = downloadFolderItems.find(item => item.filepath === filepath);
+        const existingItem = downloadItems.find(item => item.filepath === filepath);
+        const urlFromMemory = existingItem?.url || '';
         const thumbnailFromMemory = existingItem?.thumbnailDataUrl;
         const sizeFromMemory = existingItem?.sizeLabel || '';
         const extFromMemory = existingItem?.ext || eventExt;
         const qualityFromMemory = existingItem?.quality || '';
         
-        setDownloadFolderItems(prev => prev.filter(item => item.filepath !== filepath));
-        
-        const existsInHistory = downloadHistory.some(item => {
+        const existsInItems = downloadItems.some(item => {
           const itemFilename = item.filepath.split(/[\\/]/).pop() || '';
           const itemFilenameBase = itemFilename.replace(/\.[^.]+$/, '');
           const itemExt = item.ext?.toUpperCase() || '';
           return itemFilenameBase.toLowerCase() === eventFilenameBase.toLowerCase() && itemExt === eventExt;
         });
 
-        if (!existsInHistory) {
+        if (existingItem) {
+          setDownloadItems(prev => prev.map(item => 
+            item.filepath === filepath ? { ...item, status: 'deleted' as const } : item
+          ));
+          saveHistoryRef.current(downloadItems.map(item => 
+            item.filepath === filepath ? { ...item, status: 'deleted' } : item
+          ));
+        } else if (!existsInItems && urlFromMemory) {
           const newHistoryItem: DownloadHistoryItem = {
             id: safeBtoa(filepath),
             url: '',
@@ -158,166 +184,104 @@ export default function App() {
             format: eventExt.match(/^(MP3|M4A|OGG|FLAC|WAV)$/i) ? 'audio' : 'video',
             quality: qualityFromMemory,
             thumbnailDataUrl: thumbnailFromMemory || undefined,
+            status: 'deleted',
           };
           
-          const updated = [newHistoryItem, ...downloadHistory];
-          setDownloadHistory(updated);
-          saveHistoryRef.current(updated);
+          setDownloadItems(prev => [newHistoryItem, ...prev]);
+          saveHistoryRef.current([newHistoryItem, ...downloadItems]);
         }
       } else if (action === 'restored') {
-        const existingItem = downloadFolderItems.find(item => item.filepath === filepath);
-        const sizeFromMemory = existingItem?.sizeLabel || '';
-        const extFromMemory = existingItem?.ext || eventExt;
-        const qualityFromMemory = existingItem?.quality || '';
+        const normalizedPath = normalizeFilepath(filepath);
         
-        const thumbPathJpg = filepath.replace(/\.[^.]+$/, '.jpg');
-        const parentDir = filepath.substring(0, filepath.lastIndexOf('\\') + 1);
-        const baseName = filepath.split('\\').pop()?.replace(/\.[^.]+$/, '') || '';
-        const thumbPathExact = parentDir + baseName + '.jpg';
+        const existingItem = downloadItems.find(item => 
+          normalizeFilepath(item.filepath || '') === normalizedPath
+        );
         
-        const tryLoadThumbnail = async (path: string) => {
-          try {
-            return await invoke<string>('read_thumbnail_as_base64', { path });
-          } catch {
-            return null;
-          }
-        };
-        
-        loadThumbnailRef.current(thumbPathJpg).then(thumb => {
-          if (!thumb) {
-            tryLoadThumbnail(thumbPathExact).then(fallbackThumb => {
-              setDownloadFolderItems(prev => {
-                const exists = prev.some(item => item.filepath === filepath);
-                if (!exists) {
-                  const newItem: DownloadHistoryItem = {
-                    id: safeBtoa(filepath),
-                    url: '',
-                    title: eventFilenameBase,
-                    filename: eventFilename,
-                    filepath: filepath,
-                    type: eventExt.match(/^(MP3|M4A|OGG|FLAC|WAV)$/i) ? 'audio' : 'video',
-                    ext: extFromMemory,
-                    completedAt: Date.now(),
-                    sizeLabel: sizeFromMemory,
-                    format: eventExt.match(/^(MP3|M4A|OGG|FLAC|WAV)$/i) ? 'audio' : 'video',
-                    quality: qualityFromMemory,
-                    thumbnailDataUrl: fallbackThumb || undefined,
-                  };
-                  return [newItem, ...prev];
-                }
-                
-                return prev.map(item => {
-                  if (item.filepath === filepath && !item.thumbnailDataUrl && fallbackThumb) {
-                    return { ...item, thumbnailDataUrl: fallbackThumb };
-                  }
-                  return item;
-                });
-              });
-            });
-          } else {
-            setDownloadFolderItems(prev => {
-              const exists = prev.some(item => item.filepath === filepath);
-              if (!exists) {
-                const newItem: DownloadHistoryItem = {
-                  id: safeBtoa(filepath),
-                  url: '',
-                  title: eventFilenameBase,
-                  filename: eventFilename,
-                  filepath: filepath,
-                  type: eventExt.match(/^(MP3|M4A|OGG|FLAC|WAV)$/i) ? 'audio' : 'video',
-                  ext: extFromMemory,
-                  completedAt: Date.now(),
-                  sizeLabel: sizeFromMemory,
-                  format: eventExt.match(/^(MP3|M4A|OGG|FLAC|WAV)$/i) ? 'audio' : 'video',
-                  quality: qualityFromMemory,
-                  thumbnailDataUrl: thumb || undefined,
-                };
-                return [newItem, ...prev];
+        if (existingItem) {
+          setDownloadItems(prev => {
+            const updated = prev.map(item => {
+              if (normalizeFilepath(item.filepath || '') === normalizedPath) {
+                return { ...item, status: 'active' as const };
               }
-              
-              return prev.map(item => {
-                if (item.filepath === filepath && !item.thumbnailDataUrl && thumb) {
-                  return { ...item, thumbnailDataUrl: thumb };
-                }
-                return item;
-              });
+              return item;
             });
-          }
-        });
-
-        setDownloadHistory(prev => {
-          const filtered = prev.filter(item => {
-            const itemFilename = item.filepath.split(/[\\/]/).pop() || '';
-            const itemFilenameBase = itemFilename.replace(/\.[^.]+$/, '');
-            const itemExt = item.ext?.toUpperCase() || '';
-            return !(itemFilenameBase.toLowerCase() === eventFilenameBase.toLowerCase() && itemExt === eventExt);
+            saveHistoryRef.current(updated);
+            return updated;
           });
-          if (filtered.length !== prev.length) {
-            saveHistoryRef.current(filtered);
-          }
-          return filtered;
-        });
+        } else {
+          // SKIP temp files - se não tem URL, é arquivo temporário (.webm de conversão)
+          // Arquivos reais SEMPRE têm URL do YouTube/etc
+          // Isso evita .webm temporários no histórico
+        }
       }
     });
 
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, [downloadHistory]);
+  }, [downloadItems]);
 
   useEffect(() => {
-    if ((currentScreen === 'search' || currentScreen === 'downloads') && downloadHistory.length > 0) {
-      const paths = downloadHistory.map(item => item.filepath || '');
+    if ((currentScreen === 'search' || currentScreen === 'downloads') && downloadItems.length > 0) {
+      const items = downloadItems;
+      const paths = items.map(item => item.filepath || '');
       invoke<(string | null)[]>('resolve_paths', { paths })
         .then((resolvedArray) => {
           let hasChanges = false;
-          const updatedHistory = downloadHistory.map((item, index) => {
+          const updatedHistory = items.map((item, index) => {
             const resolvedPath = resolvedArray[index];
             const exists = !!resolvedPath;
-            const isMissing = !exists && !!item.filepath;
+            const isDeleted = !exists && !!item.filepath && item.status === 'deleted';
             
-            let newItem = { ...item, isMissing };
+            let newItem = { ...item };
             
             if (resolvedPath && resolvedPath !== item.filepath) {
               newItem.filepath = resolvedPath;
               hasChanges = true;
             }
 
-            if (item.isMissing !== isMissing) {
+            if (exists && item.status === 'deleted') {
+              newItem.status = 'active';
               hasChanges = true;
             }
             return newItem;
           });
           if (hasChanges) {
-            setDownloadHistory(updatedHistory);
+            setDownloadItems(updatedHistory);
             saveHistoryToBackend(updatedHistory);
           }
         })
         .catch(() => {});
     }
-  }, [currentScreen, downloadHistory.length, saveHistoryToBackend]);
+  }, [currentScreen, downloadItems.length, saveHistoryToBackend]);
 
   useEffect(() => {
     if (currentScreen === 'downloads') {
       const loadMissingThumbnails = async () => {
-        const itemsToLoad = downloadHistory.slice(0, 10);
+        const itemsToLoad = downloadItems.slice(0, 10);
         
-        for (const item of itemsToLoad) {
-          if (!item.thumbnailDataUrl && item.filepath) {
+        const loadPromises = itemsToLoad
+          .filter(item => !item.thumbnailDataUrl && item.filepath)
+          .map(async (item) => {
             const filepathWithoutExt = item.filepath.replace(/\.[^.]+$/, '');
             const thumb = await loadThumbnail(filepathWithoutExt + '.jpg');
-            if (thumb) {
-              setDownloadHistory(prev => prev.map(h => 
-                h.id === item.id ? { ...h, thumbnailDataUrl: thumb } : h
-              ));
-            }
+            return thumb ? { id: item.id, thumb } : null;
+          });
+        
+        const results = await Promise.all(loadPromises);
+        
+        results.filter(Boolean).forEach(result => {
+          if (result) {
+            setDownloadItems(prev => prev.map(h => 
+              h.id === result!.id ? { ...h, thumbnailDataUrl: result!.thumb } : h
+            ));
           }
-        }
+        });
       };
       
       loadMissingThumbnails();
     }
-  }, [currentScreen]);
+  }, [currentScreen, downloadItems]);
 
   const [isPaused, setIsPaused] = useState(false);
   const [showCancelModal, setShowCancelModal] = useState(false);
@@ -411,16 +375,87 @@ export default function App() {
   useDownloadProgress({
     currentProgress,
     setCurrentProgress,
-    downloadHistory,
-    setDownloadHistory,
+    downloadItems,
+    setDownloadItems,
     saveHistoryToBackend,
-    onDownloadComplete: (newItem) => {
+    onDownloadComplete: async (newItem) => {
       const ext = newItem.ext?.toLowerCase() || '';
-      if (ext === 'jpg' || ext === 'webp') {
+      if (ext === 'jpg') {
         return;
       }
-      const newFilePathNormalized = normalizeFilepath(newItem.filepath || '');
-      setDownloadFolderItems(prev => {
+      if (ext === 'webp') {
+        return;
+      }
+
+      let realSizeLabel = newItem.sizeLabel;
+      
+      const normalizedPath = newItem.filepath.replace(/\//g, '\\');
+      
+      // Função para normalizar nome para fuzzy match
+      const normalizeForMatch = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+      
+      // Tenta path normalizado primeiro
+      let foundPath: string | null = null;
+      try {
+        const fileSize = await invoke<number>('get_file_size', { path: normalizedPath });
+        foundPath = normalizedPath;
+        const mb = fileSize / (1024 * 1024);
+        if (mb >= 1024) {
+          realSizeLabel = `${(mb / 1024).toFixed(2)} GB`;
+        } else if (mb >= 0.1) {
+          realSizeLabel = `${mb.toFixed(2)} MB`;
+        } else {
+          realSizeLabel = `${(mb * 1024).toFixed(0)} KB`;
+        }
+      } catch {
+        // Fuzzy match: lista arquivos na pasta
+        const dir = newItem.filepath.replace(/[\\/][^\\/]+$/, '').replace(/\//g, '\\');
+        const baseName = normalizeForMatch(newItem.filename.replace(/\.[^.]+$/, ''));
+        
+        try {
+          const files = await invoke<string[]>('list_files_in_folder', { folderPath: dir });
+          if (files && files.length > 0) {
+            const extRequested = newItem.ext?.toLowerCase() || '';
+            console.log('[DEBUG] extrequested:', extRequested);
+            console.log('[DEBUG] files found:', files);
+            
+            for (const file of files) {
+              const fileExt = file.split('.').pop()?.toLowerCase() || '';
+              const fileMatch = normalizeForMatch(file.replace(/\.[^.]+$/, ''));
+              
+              // Verifica extensão E fuzzy match do nome
+              if (fileExt === extRequested && (fileMatch.includes(baseName) || baseName.includes(fileMatch))) {
+                const fullPath = dir + '\\' + file;
+                console.log('[DEBUG] matched file:', file);
+                try {
+                  const fileSize = await invoke<number>('get_file_size', { path: fullPath });
+                  foundPath = fullPath;
+                  const mb = fileSize / (1024 * 1024);
+                  if (mb >= 1024) {
+                    realSizeLabel = `${(mb / 1024).toFixed(2)} GB`;
+                  } else if (mb >= 0.1) {
+                    realSizeLabel = `${mb.toFixed(2)} MB`;
+                  } else {
+                    realSizeLabel = `${(mb * 1024).toFixed(0)} KB`;
+                  }
+                  break;
+                } catch {
+                  continue;
+                }
+              }
+            }
+          }
+        } catch (e) {
+          console.log('[DEBUG] list_files_in_folder error:', e);
+        }
+      }
+
+      console.log('[DEBUG] final realSizeLabel:', realSizeLabel, 'foundPath:', foundPath);
+
+      const newFilePathNormalized = normalizeFilepath(foundPath || newItem.filepath || '');
+      const itemWithStatus = { ...newItem, sizeLabel: realSizeLabel, status: 'active' as const, filepath: foundPath || newItem.filepath };
+      
+      setDownloadItems(prev => {
         const existingIndex = prev.findIndex(i => 
           normalizeFilepath(i.filepath || '') === newFilePathNormalized
         );
@@ -429,8 +464,9 @@ export default function App() {
           const updated = [...prev];
           updated[existingIndex] = {
             ...updated[existingIndex],
+            ...itemWithStatus,
             thumbnailDataUrl: newItem.thumbnailDataUrl || updated[existingIndex].thumbnailDataUrl,
-            sizeLabel: newItem.sizeLabel || updated[existingIndex].sizeLabel,
+            sizeLabel: itemWithStatus.sizeLabel || updated[existingIndex].sizeLabel,
             url: newItem.url || updated[existingIndex].url,
             format: newItem.format || updated[existingIndex].format,
             quality: newItem.quality || updated[existingIndex].quality,
@@ -438,14 +474,24 @@ export default function App() {
           return updated;
         }
         
-        const newList = [newItem, ...prev];
-        return newList;
+        const newList = [itemWithStatus, ...prev];
+        // Deduplicate by filepath before saving
+        const seen = new Set<string>();
+        const deduped = newList.filter(item => {
+          const key = item.filepath?.toLowerCase() || item.id;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        saveHistoryRef.current(deduped);
+        return deduped;
       });
-      setDownloadHistory(prev => {
-        const filtered = prev.filter(i => i.id !== newItem.id);
-        saveHistoryRef.current(filtered);
-        return filtered;
-      });
+
+      if (newItem.filepath) {
+        const fileDir = newItem.filepath.substring(0, Math.max(newItem.filepath.lastIndexOf('/'), newItem.filepath.lastIndexOf('\\')) + 1);
+        const normalizedFileDir = fileDir.endsWith('\\') ? fileDir : fileDir + '\\';
+        activeDownloadsRef.current.delete(normalizedFileDir);
+      }
     },
     playNotificationSound,
     setNotification,
@@ -459,6 +505,10 @@ export default function App() {
         delete next[id];
         return next;
       });
+      if (downloadPath) {
+        const dir = downloadPath + (downloadPath.endsWith('\\') || downloadPath.endsWith('/') ? '' : '\\');
+        activeDownloadsRef.current.delete(dir);
+      }
     } catch (error) { console.error('Cancel error:', error); }
   };
 
@@ -492,17 +542,15 @@ export default function App() {
     
     setIsDeleting(false);
     
-    setDownloadFolderItems(prev => prev.filter(item => !items.some(i => i.id === item.id)));
-    setDownloadHistory(prev => {
-      const newHistory = [...prev];
-      for (const item of items) {
-        const exists = newHistory.some(h => h.filepath === item.filepath);
-        if (!exists) {
-          newHistory.unshift({ ...item, isMissing: true });
+    setDownloadItems(prev => {
+      const newItems = prev.map(item => {
+        if (items.some(i => i.id === item.id)) {
+          return { ...item, status: 'deleted' as const };
         }
-      }
-      saveHistoryRef.current(newHistory);
-      return newHistory;
+        return item;
+      });
+      saveHistoryRef.current(newItems);
+      return newItems;
     });
     
     setNotification({ type: 'success', message: t(`${items.length} item(s) moved to trash`, `${items.length} item(s) movido(s) para a lixeira`) });
@@ -510,19 +558,21 @@ export default function App() {
   }, [setNotification]);
 
   const handleDeleteFromHistory = useCallback((items: DownloadHistoryItem[]) => {
-    const newHistory = downloadHistory.filter(h => !items.some(i => i.id === h.id));
-    setDownloadHistory(newHistory);
+    const newHistory = downloadItems.filter(h => !items.some(i => i.id === h.id));
+    setDownloadItems(newHistory);
     saveHistoryToBackend(newHistory);
     setNotification({ type: 'success', message: t(`${items.length} item(s) removed from history`, `${items.length} item(s) removido(s) do histórico`) });
     setTimeout(() => setNotification(null), 5000);
-  }, [downloadHistory, saveHistoryToBackend, setNotification]);
+  }, [downloadItems, saveHistoryToBackend, setNotification]);
 
   const handleDownloadClick = async () => {
     if (!url) return;
     
-    // Check if file already exists in download folder
-    const existingInDownloads = downloadFolderItems.find(item => 
-      item.url === url && item.ext?.toUpperCase() === selectedExtension.toUpperCase()
+    // Check if file already exists in download folder (only active items)
+    const existingInDownloads = downloadItems.find(item => 
+      item.status === 'active' && 
+      item.url === url && 
+      item.ext?.toUpperCase() === selectedExtension.toUpperCase()
     );
     
     if (existingInDownloads) {
@@ -553,6 +603,11 @@ export default function App() {
         ? (metadataTitleRef.current || t('Audio', 'Áudio')) 
         : (metadataTitleRef.current || t('Video', 'Vídeo'));
 
+      const normalizedDownloadPath = downloadPath.endsWith('\\') || downloadPath.endsWith('/') 
+        ? downloadPath 
+        : downloadPath + '\\';
+      activeDownloadsRef.current.add(normalizedDownloadPath);
+
       const newId = await invoke<string>('start_download', { 
         url, 
         outputDir: downloadPath, 
@@ -564,7 +619,7 @@ export default function App() {
 
       const intentId = safeBtoa(`${url}_${selectedQuality || ''}_${selectedFormat}_${selectedExtension}`);
       
-      setDownloadHistory(h => {
+      setDownloadItems(h => {
         const next = h.filter(item => item.id !== intentId);
         if (next.length !== h.length) saveHistoryToBackend(next);
         return next;
@@ -740,7 +795,9 @@ export default function App() {
                           setSelectedItems([]);
                         });
                       } else {
-                        handleDeleteFromHistory(items);
+                        const newItems = downloadItems.filter(h => !items.some(i => i.id === h.id));
+                        setDownloadItems(newItems);
+                        saveHistoryRef.current(newItems);
                         setDeleteModal(null);
                         setSelectedItems([]);
                       }
@@ -810,7 +867,7 @@ export default function App() {
                 />
 
                 <RecentActivity
-                  items={downloadFolderItems}
+                  items={downloadItems}
                   onItemClick={() => {}}
                   onRedownload={handleRedownload}
                   onOpenFolder={handleOpenFolder}
@@ -825,7 +882,7 @@ export default function App() {
                 <div className="flex flex-col gap-4 border-b border-white/5 pb-6">
                   <div className="flex items-center justify-end">
                     <div className="flex items-center gap-3">
-                      {(downloadFolderItems.length > 0 || downloadHistory.length > 0) && (
+                      {(downloadItems.length > 0 || downloadItems.length > 0) && (
                         <div className="flex items-center bg-white/5 p-1 rounded-xl border border-white/5">
                           <button 
                             onClick={() => setShowArchive(false)} 
@@ -843,13 +900,13 @@ export default function App() {
                           </button>
                         </div>
                       )}
-                      {(downloadFolderItems.length > 0 || downloadHistory.length > 0) && (
+                      {(downloadItems.length > 0 || downloadItems.length > 0) && (
                         <button onClick={() => setSortOrder(prev => prev === 'newest' ? 'oldest' : 'newest')} className="flex items-center gap-1.5 bg-white/5 hover:bg-white/10 text-white/70 px-3 py-1.5 rounded-lg transition-colors text-xs font-semibold uppercase tracking-widest cursor-pointer">
                           <Clock size={14} className={`transition-transform duration-300 ${sortOrder === 'oldest' ? 'rotate-180' : ''}`} />
                           {sortOrder === 'newest' ? t('Newest', 'Mais Novos') : t('Oldest', 'Mais Antigos')}
                         </button>
                       )}
-                      {(downloadFolderItems.length > 0 || downloadHistory.length > 0) && (
+                      {(downloadItems.length > 0 || downloadItems.length > 0) && (
                         <div className="flex items-center gap-2">
                           <button 
                             onClick={() => {
@@ -857,8 +914,8 @@ export default function App() {
                                 setSelectedItems([]);
                               } else {
                                 const currentItems = showArchive 
-                                  ? downloadHistory
-                                  : downloadFolderItems;
+                                  ? downloadItems.filter(i => i.status === 'deleted')
+                                  : downloadItems.filter(i => i.status === 'active');
                                 setSelectedItems(currentItems.map(i => i.id));
                               }
                             }}
@@ -869,15 +926,15 @@ export default function App() {
                           </button>
                           <span className="bg-white/10 text-white/70 text-xs font-bold px-3 py-1 rounded-full">
                             {showArchive 
-                              ? downloadHistory.length
-                              : downloadFolderItems.length
+                              ? downloadItems.filter(i => i.status === 'deleted').length
+                              : downloadItems.filter(i => i.status === 'active').length
                             } {t('file', 'arquivo')}
                           </span>
                         </div>
                       )}
                     </div>
                   </div>
-                  {(downloadFolderItems.length > 0 || downloadHistory.length > 0) && (
+                  {(downloadItems.length > 0) && (
                     <div className="relative">
                       <input type="text" placeholder={t('Search downloads...', 'Procurar downloads...')} value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full bg-[#1a1a1a] border border-white/5 rounded-xl pl-12 pr-6 py-3 text-white placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-white/20 transition-all" />
                     </div>
@@ -896,21 +953,24 @@ export default function App() {
                       <button 
                         onClick={() => {
                           const currentItems = showArchive 
-                            ? downloadHistory
-                            : downloadFolderItems;
+                            ? downloadItems.filter(i => i.status === 'deleted')
+                            : downloadItems.filter(i => i.status === 'active');
                           const itemsToDelete = currentItems.filter(i => selectedItems.includes(i.id));
                           setDeleteModal({ show: true, items: itemsToDelete, mode: showArchive ? 'history' : 'trash' });
                         }}
                         className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold bg-red-500 hover:bg-red-600 text-white transition-colors"
                       >
                         <Trash2 size={16} />
-                        {showArchive ? t('Remove', 'Remover') : t('Move to trash', 'Mover para lixeira')}
+                        {showArchive ? t('Remove from history', 'Remover do histórico') : t('Move to trash', 'Mover para lixeira')}
                       </button>
                     </div>
                   </div>
                 )}
                 <HistoryList
-                  items={showArchive ? downloadHistory : downloadFolderItems}
+                  items={showArchive 
+                    ? downloadItems.filter(i => i.status === 'deleted')
+                    : downloadItems.filter(i => i.status === 'active')
+                  }
                   searchQuery={searchQuery}
                   setSearchQuery={setSearchQuery}
                   showArchive={showArchive}
@@ -921,7 +981,7 @@ export default function App() {
                   downloadPath={downloadPath}
                   selectedItems={selectedItems}
                   setSelectedItems={setSelectedItems}
-                  onDelete={(item, mode) => setDeleteModal({ show: true, items: [item], mode })}
+                  onDelete={(item) => setDeleteModal({ show: true, items: [item], mode: item.status === 'deleted' ? 'history' : 'trash' })}
                 />
               </div>
             )}

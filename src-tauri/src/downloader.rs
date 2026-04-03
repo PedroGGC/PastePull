@@ -101,8 +101,8 @@ pub fn build_ytdlp_args(
             ]);
             info!("Audio format: {}", ext);
         }
-        (_, q) if q.ends_with("P VIDEO") => {
-            let height = q.replace("P VIDEO", "");
+        (_, q) if q.ends_with("P") && !q.contains("AUDIO") => {
+            let height = q.replace("P", "");
             args.extend_from_slice(&[
                 "-f".to_string(),
                 format!("bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={height}]+bestaudio"),

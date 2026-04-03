@@ -50,6 +50,7 @@ pub struct HistoryEntry {
     pub thumbnail_data_url: Option<String>,
     pub format: String,
     pub quality: String,
+    pub status: String,
 }
 
 pub type SharedDownloadState = Arc<Mutex<HashMap<String, DownloadHandle>>>;

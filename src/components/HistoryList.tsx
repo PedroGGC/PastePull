@@ -17,7 +17,7 @@ interface HistoryListProps {
   downloadPath: string;
   selectedItems: string[];
   setSelectedItems: (ids: string[]) => void;
-  onDelete: (item: DownloadHistoryItem, mode: 'trash' | 'history') => void;
+  onDelete: (item: DownloadHistoryItem) => void;
 }
 
 export function HistoryList({
@@ -77,7 +77,7 @@ export function HistoryList({
         <div className="grid gap-3">
           {filteredItems.map((item) => (
             <div 
-              key={item.id} 
+              key={item.filepath || item.id} 
               className={`group flex flex-col sm:flex-row items-center gap-4 p-4 bg-[#1a1a1a] border border-white/5 rounded-2xl hover:bg-[#1e1e1e] transition-colors ${selectionMode ? 'cursor-default' : ''}`}
               onClick={() => !selectionMode && onItemClick(item)}
             >
@@ -140,7 +140,7 @@ export function HistoryList({
                 </div>
               </div>
               <div className="shrink-0 w-full sm:w-auto flex justify-end gap-2">
-                {item.isMissing ? (
+                {item.status === 'deleted' ? (
                   <button 
                     onClick={(e) => { e.stopPropagation(); onRedownload(item); }}
                     className="px-4 py-2.5 rounded-lg bg-yellow-400/10 hover:bg-yellow-400/20 text-yellow-500 text-xs font-bold transition-all uppercase tracking-wider"
@@ -163,10 +163,10 @@ export function HistoryList({
                 <button 
                   onClick={(e) => {
                     e.stopPropagation();
-                    onDelete(item, item.isMissing ? 'history' : 'trash');
+                    onDelete(item);
                   }}
                   className="p-2.5 rounded-lg text-white/30 hover:text-red-400 hover:bg-red-400/10 transition-colors"
-                  title={item.isMissing ? t('Remove from history', 'Remover do histórico') : t('Move to trash', 'Mover para lixeira')}
+                  title={item.status === 'deleted' ? t('Remove from history', 'Remover do histórico') : t('Move to trash', 'Mover para lixeira')}
                 >
                   <Trash2 size={16} />
                 </button>

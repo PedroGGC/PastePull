@@ -8,8 +8,8 @@ import { t } from '../utils/i18n';
 interface UseDownloadProgressProps {
   currentProgress: Record<string, DownloadProgress>;
   setCurrentProgress: Dispatch<SetStateAction<Record<string, DownloadProgress>>>;
-  downloadHistory: DownloadHistoryItem[];
-  setDownloadHistory: Dispatch<SetStateAction<DownloadHistoryItem[]>>;
+  downloadItems: DownloadHistoryItem[];
+  setDownloadItems: Dispatch<SetStateAction<DownloadHistoryItem[]>>;
   saveHistoryToBackend: (items: DownloadHistoryItem[]) => Promise<void>;
   onDownloadComplete?: (item: DownloadHistoryItem) => void;
   playNotificationSound: () => void;
@@ -19,8 +19,8 @@ interface UseDownloadProgressProps {
 export function useDownloadProgress({
   currentProgress,
   setCurrentProgress,
-  downloadHistory,
-  setDownloadHistory,
+  downloadItems,
+  setDownloadItems,
   saveHistoryToBackend,
   onDownloadComplete,
   playNotificationSound,
@@ -76,6 +76,10 @@ export function useDownloadProgress({
             setTimeout(() => {
               playNotificationSound();
               
+              console.log('[USE-DL] p.output_path from yt-dlp:', p.output_path);
+              console.log('[USE-DL] p.filename:', p.filename);
+              console.log('[USE-DL] p.total_size:', p.total_size);
+              
               // Rebuild correct filepath using requested extension
               const getCorrectFilepath = () => {
                 if (!p.output_path) return '';
@@ -109,15 +113,10 @@ export function useDownloadProgress({
                 thumbnailDataUrl: dataUrl || cachedMeta?.thumbnail || undefined,
                 format: p.format,
                 quality: p.quality,
+                status: 'active',
               };
 
-              setDownloadHistory((h) => {
-                const filtered = h.filter((item) => item.id !== newItem.id);
-                const next = filtered.slice(0, 100);
-                saveHistoryToBackend(next);
-                return next;
-              });
-
+              // Don't add here - App.tsx handles via onDownloadComplete
               if (onDownloadComplete) {
                 onDownloadComplete(newItem);
               }
@@ -132,7 +131,7 @@ export function useDownloadProgress({
                 delete next[p.id];
                 return next;
               });
-            }, 2000);
+            }, 200);
           });
           
           // Only update progress if the ID exists in prev
