@@ -76,10 +76,6 @@ export function useDownloadProgress({
             setTimeout(() => {
               playNotificationSound();
               
-              console.log('[USE-DL] p.output_path from yt-dlp:', p.output_path);
-              console.log('[USE-DL] p.filename:', p.filename);
-              console.log('[USE-DL] p.total_size:', p.total_size);
-              
               // Rebuild correct filepath using requested extension
               const getCorrectFilepath = () => {
                 if (!p.output_path) return '';

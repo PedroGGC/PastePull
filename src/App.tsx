@@ -48,12 +48,14 @@ export default function App() {
   });
 
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
+  const processingDeleteRef = useRef(new Set<string>());
   const [deleteModal, setDeleteModal] = useState<{
     show: boolean;
     items: DownloadHistoryItem[];
     mode: 'trash' | 'history';
   } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const fromRedownloadRef = useRef(false);
 
   useEffect(() => {
     localStorage.setItem('ud_download_path', downloadPath);
@@ -148,29 +150,43 @@ const eventFilename = filepath.split(/[\\/]/).pop() || '';
       const eventFilenameBase = eventFilename.replace(/\.[^.]+$/, ''); 
       const eventExt = eventFilename.split('.').pop()?.toUpperCase() || '';
 
-      if (action === 'deleted') {
-        const existingItem = downloadItems.find(item => item.filepath === filepath);
-        const urlFromMemory = existingItem?.url || '';
-        const thumbnailFromMemory = existingItem?.thumbnailDataUrl;
-        const sizeFromMemory = existingItem?.sizeLabel || '';
-        const extFromMemory = existingItem?.ext || eventExt;
-        const qualityFromMemory = existingItem?.quality || '';
+if (action === 'deleted') {
+        // Debounce: prevent deduplication
+        if (processingDeleteRef.current.has(filepath)) {
+          return;
+        }
+        processingDeleteRef.current.add(filepath);
         
-        const existsInItems = downloadItems.some(item => {
-          const itemFilename = item.filepath.split(/[\\/]/).pop() || '';
-          const itemFilenameBase = itemFilename.replace(/\.[^.]+$/, '');
-          const itemExt = item.ext?.toUpperCase() || '';
-          return itemFilenameBase.toLowerCase() === eventFilenameBase.toLowerCase() && itemExt === eventExt;
-        });
+        // Delay to prevent race condition
+        setTimeout(() => {
+          processingDeleteRef.current.delete(filepath);
+          
 
-        if (existingItem) {
-          setDownloadItems(prev => prev.map(item => 
-            item.filepath === filepath ? { ...item, status: 'deleted' as const } : item
-          ));
-          saveHistoryRef.current(downloadItems.map(item => 
-            item.filepath === filepath ? { ...item, status: 'deleted' } : item
-          ));
-        } else if (!existsInItems && urlFromMemory) {
+          
+          const existingItem = downloadItems.find(item => item.filepath === filepath);
+          
+          const urlFromMemory = existingItem?.url || '';
+          const thumbnailFromMemory = existingItem?.thumbnailDataUrl;
+          const sizeFromMemory = existingItem?.sizeLabel || '';
+          const extFromMemory = existingItem?.ext || eventExt;
+          const qualityFromMemory = existingItem?.quality || '';
+
+          const existsInItems = downloadItems.some(item => {
+            const itemFilename = item.filepath.split(/[\\/]/).pop() || '';
+            const itemFilenameBase = itemFilename.replace(/\.[^.]+$/, '');
+            const itemExt = item.ext?.toUpperCase() || '';
+            return itemFilenameBase.toLowerCase() === eventFilenameBase.toLowerCase() && itemExt === eventExt;
+          });
+
+          if (existingItem) {
+
+            const updatedItems = downloadItems.map(item => 
+              item.filepath === filepath ? { ...item, status: 'deleted' as const } : item
+            );
+
+            setDownloadItems(updatedItems);
+            saveHistoryRef.current(updatedItems);
+          } else if (!existsInItems && urlFromMemory) {
           const newHistoryItem: DownloadHistoryItem = {
             id: safeBtoa(filepath),
             url: '',
@@ -188,8 +204,9 @@ const eventFilename = filepath.split(/[\\/]/).pop() || '';
           };
           
           setDownloadItems(prev => [newHistoryItem, ...prev]);
-          saveHistoryRef.current([newHistoryItem, ...downloadItems]);
-        }
+            saveHistoryRef.current([newHistoryItem, ...downloadItems]);
+          }
+        });
       } else if (action === 'restored') {
         const normalizedPath = normalizeFilepath(filepath);
         
@@ -319,14 +336,18 @@ const eventFilename = filepath.split(/[\\/]/).pop() || '';
       setSelectedQuality('AUDIO ONLY');
       setSelectedExtension('MP3');
     } else {
-      if (videoQualities.length > 0) {
-        setAvailableQualities(videoQualities);
-        setSelectedQuality(videoQualities[0]);
+      if (fromRedownloadRef.current && selectedQuality) {
+        fromRedownloadRef.current = false;
       } else {
-        setAvailableQualities(['BEST QUALITY']);
-        setSelectedQuality('BEST QUALITY');
+        if (videoQualities.length > 0) {
+          setAvailableQualities(videoQualities);
+          setSelectedQuality(videoQualities[0]);
+        } else {
+          setAvailableQualities(['BEST QUALITY']);
+          setSelectedQuality('BEST QUALITY');
+        }
+        setSelectedExtension('MP4');
       }
-      setSelectedExtension('MP4');
     }
   }, [selectedFormat, videoQualities]);
 
@@ -408,7 +429,7 @@ const eventFilename = filepath.split(/[\\/]/).pop() || '';
           realSizeLabel = `${(mb * 1024).toFixed(0)} KB`;
         }
       } catch {
-        // Fuzzy match: lista arquivos na pasta
+        // Fuzzy match
         const dir = newItem.filepath.replace(/[\\/][^\\/]+$/, '').replace(/\//g, '\\');
         const baseName = normalizeForMatch(newItem.filename.replace(/\.[^.]+$/, ''));
         
@@ -416,17 +437,13 @@ const eventFilename = filepath.split(/[\\/]/).pop() || '';
           const files = await invoke<string[]>('list_files_in_folder', { folderPath: dir });
           if (files && files.length > 0) {
             const extRequested = newItem.ext?.toLowerCase() || '';
-            console.log('[DEBUG] extrequested:', extRequested);
-            console.log('[DEBUG] files found:', files);
             
             for (const file of files) {
               const fileExt = file.split('.').pop()?.toLowerCase() || '';
               const fileMatch = normalizeForMatch(file.replace(/\.[^.]+$/, ''));
               
-              // Verifica extensão E fuzzy match do nome
               if (fileExt === extRequested && (fileMatch.includes(baseName) || baseName.includes(fileMatch))) {
                 const fullPath = dir + '\\' + file;
-                console.log('[DEBUG] matched file:', file);
                 try {
                   const fileSize = await invoke<number>('get_file_size', { path: fullPath });
                   foundPath = fullPath;
@@ -445,12 +462,8 @@ const eventFilename = filepath.split(/[\\/]/).pop() || '';
               }
             }
           }
-        } catch (e) {
-          console.log('[DEBUG] list_files_in_folder error:', e);
-        }
+        } catch {}
       }
-
-      console.log('[DEBUG] final realSizeLabel:', realSizeLabel, 'foundPath:', foundPath);
 
       const newFilePathNormalized = normalizeFilepath(foundPath || newItem.filepath || '');
       const itemWithStatus = { ...newItem, sizeLabel: realSizeLabel, status: 'active' as const, filepath: foundPath || newItem.filepath };
@@ -521,6 +534,7 @@ const eventFilename = filepath.split(/[\\/]/).pop() || '';
   };
 
   const handleRedownload = (item: DownloadHistoryItem) => {
+    fromRedownloadRef.current = true;
     setUrl(item.url);
     setSelectedFormat(item.format as 'video' | 'audio');
     setSelectedQuality(item.quality);
