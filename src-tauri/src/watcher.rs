@@ -3,7 +3,6 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
-use tracing::info;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct FileChangeEvent {
@@ -32,7 +31,6 @@ pub fn start_file_watcher(app: AppHandle, path: String) -> Result<(), String> {
     }
 
     let current_files = get_all_files_in_folder(&watch_path);
-    info!("File watcher started with {} files", current_files.len());
     let known_files: HashSet<String> = current_files.iter().cloned().collect();
     
     let app_clone = app.clone();
