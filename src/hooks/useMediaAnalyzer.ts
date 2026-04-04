@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useImperativeHandle } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 interface MediaInfo {
@@ -8,6 +8,10 @@ interface MediaInfo {
   type: 'video' | 'audio';
 }
 
+interface UseMediaAnalyzerOptions {
+  onError?: (message: string) => void;
+}
+
 interface UseMediaAnalyzerReturn {
   analyzedMedia: MediaInfo | null;
   isAnalyzing: boolean;
@@ -15,7 +19,7 @@ interface UseMediaAnalyzerReturn {
   mediaCapabilities: { video: boolean; audio: boolean };
 }
 
-export function useMediaAnalyzer(url: string): UseMediaAnalyzerReturn {
+export function useMediaAnalyzer(url: string, options?: UseMediaAnalyzerOptions): UseMediaAnalyzerReturn {
   const [analyzedMedia, setAnalyzedMedia] = useState<MediaInfo | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [videoQualities, setVideoQualities] = useState<string[]>([]);
@@ -70,6 +74,14 @@ export function useMediaAnalyzer(url: string): UseMediaAnalyzerReturn {
         
       } catch (err) {
         console.error('Análise do link falhou:', err);
+        const errMsg = err instanceof Error ? err.message : String(err);
+        if (errMsg.toLowerCase().includes('youtube') || errMsg.toLowerCase().includes('bot')) {
+          options?.onError?.('YouTube está sendo chato, tente novamente mais tarde!');
+        } else if (errMsg.toLowerCase().includes('sign in to confirm') || errMsg.toLowerCase().includes('cookies')) {
+          options?.onError?.('Login necessário para este conteúdo');
+        } else {
+          options?.onError?.('Erro ao analisar o link');
+        }
         setAnalyzedMedia(null);
         setMediaCapabilities({ video: true, audio: true });
         setVideoQualities(['BEST QUALITY']);

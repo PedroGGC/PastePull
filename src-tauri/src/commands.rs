@@ -504,8 +504,10 @@ pub fn move_multiple_to_trash(paths: Vec<String>) -> Result<(), String> {
                     
                     info!("Total media files with stem '{}' in folder: {}", stem_lower, total_in_folder);
                     
-                    // Only delete thumbnail if all media files with this stem are being deleted
-                    if total_in_folder <= count_being_deleted {
+                    // Only delete thumbnail if NO media files with this stem remain after deletion
+                    // Use saturating subtraction to prevent underflow
+                    let remaining = total_in_folder.saturating_sub(count_being_deleted);
+                    if remaining == 0 {
                         let thumb_str = thumb_path.to_string_lossy().to_string();
                         let thumb_ps_command = format!(
                             "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('{}', 'OnlyErrorDialogs', 'SendToRecycleBin')",
@@ -522,7 +524,7 @@ pub fn move_multiple_to_trash(paths: Vec<String>) -> Result<(), String> {
                         info!("Thumbnail moved to trash: {}", thumb_str);
                         break;
                     } else {
-                        info!("Not deleting thumbnail - {} files with same stem exist but only {} being deleted", total_in_folder, count_being_deleted);
+                        info!("Not deleting thumbnail - {} media file(s) with same stem remain after deletion", remaining);
                     }
                     break;
                 }
