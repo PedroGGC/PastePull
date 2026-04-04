@@ -128,9 +128,10 @@ export default function App() {
 
   useEffect(() => {
     const unlisten = listen<{ filepath: string; action: string }>('file-changed', (event) => {
-const { filepath, action } = event.payload;
+      const { filepath, action } = event.payload;
        
-      const fileDir = filepath.substring(0, Math.max(filepath.lastIndexOf('/'), filepath.lastIndexOf('\\')) + 1);
+      const normalizedPath = filepath.replace(/\//g, '\\');
+      const fileDir = normalizedPath.substring(0, Math.max(normalizedPath.lastIndexOf('/'), normalizedPath.lastIndexOf('\\')) + 1);
       const normalizedFileDir = fileDir.endsWith('\\') ? fileDir : fileDir + '\\';
       
       if (action !== 'restored') {
@@ -146,7 +147,7 @@ const { filepath, action } = event.payload;
         }
       }
       
-const eventFilename = filepath.split(/[\\/]/).pop() || '';
+      const eventFilename = normalizedPath.split(/[\\/]/).pop() || '';
       const eventFilenameBase = eventFilename.replace(/\.[^.]+$/, ''); 
       const eventExt = eventFilename.split('.').pop()?.toUpperCase() || '';
 
@@ -161,9 +162,7 @@ if (action === 'deleted') {
         setTimeout(() => {
           processingDeleteRef.current.delete(filepath);
           
-
-          
-          const existingItem = downloadItems.find(item => item.filepath === filepath);
+          const existingItem = downloadItems.find(item => item.filepath === normalizedPath);
           
           const urlFromMemory = existingItem?.url || '';
           const thumbnailFromMemory = existingItem?.thumbnailDataUrl;
@@ -181,18 +180,18 @@ if (action === 'deleted') {
           if (existingItem) {
 
             const updatedItems = downloadItems.map(item => 
-              item.filepath === filepath ? { ...item, status: 'deleted' as const } : item
+              item.filepath === normalizedPath ? { ...item, status: 'deleted' as const } : item
             );
 
             setDownloadItems(updatedItems);
             saveHistoryRef.current(updatedItems);
           } else if (!existsInItems && urlFromMemory) {
           const newHistoryItem: DownloadHistoryItem = {
-            id: safeBtoa(filepath),
+            id: safeBtoa(normalizedPath),
             url: '',
             title: eventFilenameBase,
             filename: eventFilename,
-            filepath: filepath,
+            filepath: normalizedPath,
             type: eventExt.match(/^(MP3|M4A|OGG|FLAC|WAV)$/i) ? 'audio' : 'video',
             ext: extFromMemory,
             completedAt: Date.now(),
@@ -501,7 +500,8 @@ if (action === 'deleted') {
       });
 
       if (newItem.filepath) {
-        const fileDir = newItem.filepath.substring(0, Math.max(newItem.filepath.lastIndexOf('/'), newItem.filepath.lastIndexOf('\\')) + 1);
+        const normalizedPath = newItem.filepath.replace(/\//g, '\\');
+        const fileDir = normalizedPath.substring(0, Math.max(normalizedPath.lastIndexOf('/'), normalizedPath.lastIndexOf('\\')) + 1);
         const normalizedFileDir = fileDir.endsWith('\\') ? fileDir : fileDir + '\\';
         activeDownloadsRef.current.delete(normalizedFileDir);
       }

@@ -1,38 +1,43 @@
-# PastePull (Universal Downloader)
+# <img src="./Logo-Bg_Big.png" width="32" align="center"> PastePull
 
-PastePull is a high-performance, universal video and audio downloader built with **Tauri**, **Rust**, and **React**. It abstracts the complexity of `yt-dlp` into a beautiful, buttery-smooth user interface with real-time progress tracking, thumbnail extraction, and download history management.
+A high-performance, universal video and audio downloader built with **Tauri**, **Rust**, and **React**. It abstracts the complexity of `yt-dlp` into a beautiful, buttery-smooth user interface with real-time progress tracking, thumbnail extraction, and download history management.
 
-> 🚀 **V1.0.2 Release:** The application is now ready for production bundling with fully embedded dependencies.
-    
+> 🚀 **V1.2.0 Release:** Production-ready with performance optimizations and bug fixes.
+
 ## Features
 
 - **Universal Support:** Download media from YouTube, Twitter/X, Reddit, TikTok, LinkedIn, and hundreds of other platforms natively supported by `yt-dlp`.
+- **Multi-Download:** Run up to 3 simultaneous downloads with individual progress tracking.
 - **Media Type & Smart Extraction:** Automatically selects and displays the best streams for Video or Audio specifically.
-- **Dynamic Quality Filtering:** A drop-down menu that populates in real-time with available resolutions exclusively for the selected media type after metadata is scouted.
-- **I18n Natively:** The UI senses your system language and automatically adjusts timestamps and interface copy seamlessly between English and Portuguese.
-- **Real-Time Global Speed & Strict Throttling:** Breathtaking display of real-time network speeds, optimized safely under the hood through Tauri IPC debouncing to maintain zero CPU-lag.
-- **Download History:** Visual history tracking with 16:9 thumbnail previews, standardized file size tags (MB/GB), exact download extension identifiers, and one-click "Open Folder" OS-integration. The system retains exactly the latest 100 historical downloads logic.
-- **Missing File Detection:** Automatically detects when downloaded files are deleted from disk and shows a "Missing" status with one-click "Redownload" option.
-- **Persistent History:** Download history is securely backed up to AppData, surviving app reinstalls.
-- **Real-Time Sync:** File status syncs automatically across Search and Downloads screens.
+- **Dynamic Quality Filtering:** Drop-down menu populated in real-time with available resolutions for the selected media type.
+- **I18n Natively:** UI senses your system language and automatically adjusts timestamps and interface copy between English and Portuguese.
+- **Real-Time Global Speed:** Display of real-time network speeds, optimized through Tauri IPC debouncing for zero CPU-lag.
+- **Download History:** Visual history tracking with 16:9 thumbnail previews, standardized file size tags, and one-click "Open Folder" integration. Retains the latest 100 downloads.
+- **Missing File Detection:** Automatically detects when downloaded files are deleted from disk and shows a "Deleted" status with one-click "Redownload" option.
+- **Persistent History:** Download history securely backed up to AppData, surviving app reinstalls.
+- **Real-Time Sync:** File watcher monitors the download folder and automatically syncs file status changes.
 
 ## Technology Stack
 
-- **Frontend:** React 19, TypeScript, Tailwind CSS v4, Lucide React (Icons).
+- **Frontend:** React 19, TypeScript, Tailwind CSS v4, Lucide React.
 - **Backend:** Rust (Tauri 2.0.0), Tokio.
-- **Core Engine:** `yt-dlp` (Video extraction) + `ffmpeg` (Stream merging).
+- **Core Engine:** `yt-dlp` + `ffmpeg`.
 - **Bundler:** Vite.
+
+## Requirements
+
+- **OS:** Windows 10 or 11 (64-bit)
+- **Runtime:** WebView2 (bundled with Windows 10/11)
 
 ## Usage
 
-PastePull is now distributed as a standalone executable (`.exe`). It bundles the core `yt-dlp` engine safely inside its secure resource scope using Tauri's `AppHandle.path().resource_dir()`, maintaining strict portability. Setup paths have been removed completely for production!
-
-Dev Note: For the engine to work correctly and multiplex 1080p+ Video/Audio natively during development, make sure ffmpeg.exe is available on your Windows PATH.
+Download the latest release from the [Releases page](https://github.com/anomalyco/UniversalDownloader/releases). The executable bundles `yt-dlp` and `ffmpeg` internally - no additional setup required.
 
 ## Architecture Notes
 
-- **Event Loop & Progress (Debounced):** The Rust backend spawns `yt-dlp` in a child process using `Command`, piping `stdout` to parse log fragments. To protect the React GUI from Main-Thread lockups, the structural events (`download-progress`) sent over IPC are rigorously throttled (delta >= `1%` OR `> 100ms`).
-- **State Management & Pattern Matching:** The backend replaces `if/else` checks with hard-fought Rust `match` clauses. The frontend operates with an explicit logic lock prior to full metadata resolution, preserving visual integrity and safely managing local arrays up to a `100` element queue.
+- **Event Loop & Progress (Debounced):** Rust backend spawns `yt-dlp` in a child process, piping stdout to parse log fragments. IPC events are throttled (delta >= `1%` OR `> 100ms`) to prevent React GUI lockups.
+- **File Watcher:** Polls download folder every 2 seconds to detect file additions/deletions in real-time.
+- **Fuzzy Matching:** Uses ASCII-alphanumeric normalization for robust file matching across history.
 
 ---
 
