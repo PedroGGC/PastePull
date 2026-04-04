@@ -152,10 +152,7 @@ pub async fn cancel_download(
 
         if let Some(ref mut child) = handle.process {
             let pid = child.id();
-            #[cfg(target_os = "windows")]
             kill_process_tree(pid);
-            #[cfg(not(target_os = "windows"))]
-            let _ = child.kill();
             info!("Download {} cancelled - PID {} terminated", id, pid);
         }
 
@@ -531,11 +528,6 @@ pub fn move_multiple_to_trash(paths: Vec<String>) -> Result<(), String> {
                 }
             }
         }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        return Err("Esta funcionalidade só está disponível no Windows".to_string());
     }
 
     info!("Move to trash completed");
