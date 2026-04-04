@@ -416,7 +416,16 @@ pub fn spawn_download_thread(
                 }
             }
             
-            if ok {
+            // Check for specific format errors (TikTok case)
+            let has_format_error = if let Ok(err_bytes) = std::fs::read(&stderr_path) {
+                let err_content = crate::utils::decode_bytes(&err_bytes);
+                err_content.contains("Requested format is not available") 
+                    || err_content.contains("format is not available")
+            } else { false };
+
+            let final_ok = ok && !has_format_error;
+            
+            if final_ok {
                 last_progress.status = "completed".to_string();
                 last_progress.percent = 100.0;
             } else {

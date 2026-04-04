@@ -95,17 +95,13 @@ export default function App() {
       setSelectedQuality('AUDIO ONLY');
       setSelectedExtension('MP3');
     } else {
-      if (fromRedownloadRef.current && selectedQuality) {
-        fromRedownloadRef.current = false;
+      const newQualities = videoQualities.length > 0 ? videoQualities : ['BEST QUALITY'];
+      setAvailableQualities(newQualities);
+      setSelectedExtension('MP4');
+      
+      if (selectedQuality && newQualities.includes(selectedQuality)) {
       } else {
-        if (videoQualities.length > 0) {
-          setAvailableQualities(videoQualities);
-          setSelectedQuality(videoQualities[0]);
-        } else {
-          setAvailableQualities(['BEST QUALITY']);
-          setSelectedQuality('BEST QUALITY');
-        }
-        setSelectedExtension('MP4');
+        setSelectedQuality(newQualities[0]);
       }
     }
   }, [selectedFormat, videoQualities]);
@@ -266,7 +262,7 @@ export default function App() {
         activeDownloadsRef.current.delete(nfd);
       }
     },
-    playNotificationSound, setNotification: showNotification
+    playNotificationSound, showNotification
   });
 
   return (

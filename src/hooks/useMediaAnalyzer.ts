@@ -75,7 +75,9 @@ export function useMediaAnalyzer(url: string, options?: UseMediaAnalyzerOptions)
       } catch (err) {
         console.error('Análise do link falhou:', err);
         const errMsg = err instanceof Error ? err.message : String(err);
-        if (errMsg.toLowerCase().includes('youtube') || errMsg.toLowerCase().includes('bot')) {
+        if (errMsg.toLowerCase().includes('requested format') || errMsg.toLowerCase().includes('format is not available')) {
+          options?.onError?.('Formato não disponível para este conteúdo. Tente outra qualidade.');
+        } else if (errMsg.toLowerCase().includes('youtube') || errMsg.toLowerCase().includes('bot')) {
           options?.onError?.('YouTube está sendo chato, tente novamente mais tarde!');
         } else if (errMsg.toLowerCase().includes('sign in to confirm') || errMsg.toLowerCase().includes('cookies')) {
           options?.onError?.('Login necessário para este conteúdo');

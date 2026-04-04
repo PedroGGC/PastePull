@@ -13,7 +13,7 @@ interface UseDownloadProgressProps {
   saveHistoryToBackend: (items: DownloadHistoryItem[]) => Promise<void>;
   onDownloadComplete?: (item: DownloadHistoryItem) => void;
   playNotificationSound: () => void;
-  setNotification: Dispatch<SetStateAction<{type: 'success' | 'error' | 'warning', message: string, onClick?: () => void} | null>>;
+  showNotification: (type: 'success' | 'error' | 'warning', message: string, duration?: number) => void;
 }
 
 export function useDownloadProgress({
@@ -24,7 +24,7 @@ export function useDownloadProgress({
   saveHistoryToBackend,
   onDownloadComplete,
   playNotificationSound,
-  setNotification,
+  showNotification,
 }: UseDownloadProgressProps) {
   const [metadataTitleCache, setMetadataTitleCache] = useState<Record<string, { title: string; thumbnail: string }>>({});
   const processedCompletedRef = useRef<Set<string>>(new Set());
@@ -118,8 +118,7 @@ export function useDownloadProgress({
               }
 
               if (p.status === 'skipped') {
-                setNotification({ type: 'warning', message: t('Already downloaded!', 'Já foi baixado!') });
-                setTimeout(() => setNotification(null), 10000);
+                showNotification('warning', t('Already downloaded!', 'Já foi baixado!'), 10000);
               }
 
               setCurrentProgress((curr) => {
@@ -147,16 +146,22 @@ export function useDownloadProgress({
           
           if (p.status === 'error') {
             const lowErr = (p.error_message || '').toLowerCase();
-            if (lowErr.includes('403') || lowErr.includes('sign in') || lowErr.includes('bot') || lowErr.includes('blocked') || lowErr.includes('rate limit')) {
+            if (lowErr.includes('requested format') || lowErr.includes('format is not available')) {
               playNotificationSound();
-              setNotification({
-                type: 'error', 
-                message: t('YouTube blocked the request. Try again later or use cookies!', 'O YouTube bloqueou a requisição. Tente novamente mais tarde ou use cookies!')
-              });
-              setTimeout(() => setNotification(null), 10000);
+              showNotification(
+                'error', 
+                t('Format not available. Try another quality.', 'Formato não disponível. Tente outra qualidade.'),
+                10000
+              );
+            } else if (lowErr.includes('403') || lowErr.includes('sign in') || lowErr.includes('bot') || lowErr.includes('blocked') || lowErr.includes('rate limit')) {
+              playNotificationSound();
+              showNotification(
+                'error', 
+                t('YouTube blocked the request. Try again later or use cookies!', 'O YouTube bloqueou a requisição. Tente novamente mais tarde ou use cookies!'),
+                10000
+              );
             } else {
-              setNotification({ type: 'error', message: t('Download error!', 'Erro no download!') });
-              setTimeout(() => setNotification(null), 5000);
+              showNotification('error', t('Download error!', 'Erro no download!'), 5000);
             }
           }
 

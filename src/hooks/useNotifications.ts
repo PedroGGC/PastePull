@@ -21,6 +21,10 @@ export function useNotifications() {
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
     }
+    if (!message) {
+      console.warn('[NOTIFICATION] Called with empty message!');
+      return;
+    }
     setNotification({ type, message, onClick });
     timeoutRef.current = window.setTimeout(() => {
       setNotification(null);

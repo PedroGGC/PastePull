@@ -123,6 +123,8 @@ export async function startDownload({
       onNotification('warning', t('Already downloaded!', 'Já foi baixado!'), 10000);
     } else if (errMsg.includes('oauth_required') || errMsg.toLowerCase().includes('login')) {
       onNotification('warning', t('OAuth login required! Check the terminal.', 'Login OAuth necessário! Verifique o terminal.'), 10000);
+    } else if (errMsg.toLowerCase().includes('requested format') || errMsg.toLowerCase().includes('format is not available')) {
+      onNotification('error', t('Format not available. Try another quality.', 'Formato não disponível. Tente outra qualidade.'), 10000);
     } else if (errMsg.toLowerCase().includes('youtube') || errMsg.toLowerCase().includes('bot') || errMsg.toLowerCase().includes('sign in to confirm')) {
       onNotification('error', t('YouTube is being boring, try again later!', 'YouTube está sendo chato, tente novamente mais tarde!'), 10000);
     } else if (errMsg.toLowerCase().includes('http error 403') || errMsg.toLowerCase().includes('blocked') || errMsg.toLowerCase().includes('rate limit')) {
