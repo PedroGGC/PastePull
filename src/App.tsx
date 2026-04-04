@@ -158,53 +158,55 @@ if (action === 'deleted') {
         }
         processingDeleteRef.current.add(filepath);
         
-        // Delay to prevent race condition
+        // Delay to prevent race condition - use setDownloadItems callback to get fresh state
         setTimeout(() => {
           processingDeleteRef.current.delete(filepath);
           
-          const existingItem = downloadItems.find(item => item.filepath === normalizedPath);
-          
-          const urlFromMemory = existingItem?.url || '';
-          const thumbnailFromMemory = existingItem?.thumbnailDataUrl;
-          const sizeFromMemory = existingItem?.sizeLabel || '';
-          const extFromMemory = existingItem?.ext || eventExt;
-          const qualityFromMemory = existingItem?.quality || '';
+          setDownloadItems(prev => {
+            const existingItem = prev.find(item => item.filepath === normalizedPath);
+            
+            const urlFromMemory = existingItem?.url || '';
+            const thumbnailFromMemory = existingItem?.thumbnailDataUrl;
+            const sizeFromMemory = existingItem?.sizeLabel || '';
+            const extFromMemory = existingItem?.ext || eventExt;
+            const qualityFromMemory = existingItem?.quality || '';
 
-          const existsInItems = downloadItems.some(item => {
-            const itemFilename = item.filepath.split(/[\\/]/).pop() || '';
-            const itemFilenameBase = itemFilename.replace(/\.[^.]+$/, '');
-            const itemExt = item.ext?.toUpperCase() || '';
-            return itemFilenameBase.toLowerCase() === eventFilenameBase.toLowerCase() && itemExt === eventExt;
+            const existsInItems = prev.some(item => {
+              const itemFilename = item.filepath.split(/[\\/]/).pop() || '';
+              const itemFilenameBase = itemFilename.replace(/\.[^.]+$/, '');
+              const itemExt = item.ext?.toUpperCase() || '';
+              return itemFilenameBase.toLowerCase() === eventFilenameBase.toLowerCase() && itemExt === eventExt;
+            });
+
+            if (existingItem) {
+              const updatedItems = prev.map(item => 
+                item.filepath === normalizedPath ? { ...item, status: 'deleted' as const } : item
+              );
+              saveHistoryRef.current(updatedItems);
+              return updatedItems;
+            } else if (!existsInItems && urlFromMemory) {
+              const newHistoryItem: DownloadHistoryItem = {
+                id: safeBtoa(normalizedPath),
+                url: '',
+                title: eventFilenameBase,
+                filename: eventFilename,
+                filepath: normalizedPath,
+                type: eventExt.match(/^(MP3|M4A|OGG|FLAC|WAV)$/i) ? 'audio' : 'video',
+                ext: extFromMemory,
+                completedAt: Date.now(),
+                sizeLabel: sizeFromMemory,
+                format: eventExt.match(/^(MP3|M4A|OGG|FLAC|WAV)$/i) ? 'audio' : 'video',
+                quality: qualityFromMemory,
+                thumbnailDataUrl: thumbnailFromMemory || undefined,
+                status: 'deleted',
+              };
+              
+              saveHistoryRef.current([newHistoryItem, ...prev]);
+              return [newHistoryItem, ...prev];
+            }
+            
+            return prev;
           });
-
-          if (existingItem) {
-
-            const updatedItems = downloadItems.map(item => 
-              item.filepath === normalizedPath ? { ...item, status: 'deleted' as const } : item
-            );
-
-            setDownloadItems(updatedItems);
-            saveHistoryRef.current(updatedItems);
-          } else if (!existsInItems && urlFromMemory) {
-          const newHistoryItem: DownloadHistoryItem = {
-            id: safeBtoa(normalizedPath),
-            url: '',
-            title: eventFilenameBase,
-            filename: eventFilename,
-            filepath: normalizedPath,
-            type: eventExt.match(/^(MP3|M4A|OGG|FLAC|WAV)$/i) ? 'audio' : 'video',
-            ext: extFromMemory,
-            completedAt: Date.now(),
-            sizeLabel: sizeFromMemory,
-            format: eventExt.match(/^(MP3|M4A|OGG|FLAC|WAV)$/i) ? 'audio' : 'video',
-            quality: qualityFromMemory,
-            thumbnailDataUrl: thumbnailFromMemory || undefined,
-            status: 'deleted',
-          };
-          
-          setDownloadItems(prev => [newHistoryItem, ...prev]);
-            saveHistoryRef.current([newHistoryItem, ...downloadItems]);
-          }
         });
       } else if (action === 'restored') {
         const normalizedPath = normalizeFilepath(filepath);
