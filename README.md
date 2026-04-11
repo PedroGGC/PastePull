@@ -31,7 +31,7 @@ A high-performance, universal video and audio downloader built with **Tauri**, *
 
 ## Usage
 
-Download the latest release from the [Releases page](https://github.com/anomalyco/UniversalDownloader/releases). The executable bundles `yt-dlp` and `ffmpeg` internally - no additional setup required.
+Download the latest release from the [Releases page](https://github.com/PedroGGC/PastePull/releases). The executable bundles `yt-dlp` and `ffmpeg` internally - no additional setup required.
 
 ## Architecture Notes
 
