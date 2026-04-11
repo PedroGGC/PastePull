@@ -37,7 +37,7 @@ export default function App() {
       const saved = localStorage.getItem('ud_settings');
       if (saved) return JSON.parse(saved);
     } catch {}
-    return { theme: 'dark', soundEnabled: false, desktopNotification: false, maxDownloads: 3 };
+    return { theme: 'dark', soundEnabled: false, desktopNotification: false, maxDownloads: 3, useBrowserCookies: false };
   });
   
   const [availableQualities, setAvailableQualities] = useState<string[]>([]);

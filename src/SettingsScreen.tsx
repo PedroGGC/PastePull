@@ -1,12 +1,14 @@
-import React, { useState, useEffect } from 'react';
-import { Sliders, FolderOpen, Bell, Bolt } from 'lucide-react';
+import React from 'react';
+import { motion } from 'motion/react';
+import { Sliders, FolderOpen, Bell, Bolt, Cookie, Moon, Sun } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
+import { Settings } from './types';
 
 interface SettingsScreenProps {
   downloadPath: string;
   onDownloadPathChange: (path: string) => void;
-  settings: { theme: 'dark' | 'light', soundEnabled: boolean, desktopNotification: boolean, maxDownloads: number };
-  setSettings: React.Dispatch<React.SetStateAction<{ theme: 'dark' | 'light', soundEnabled: boolean, desktopNotification: boolean, maxDownloads: number }>>;
+  settings: Settings;
+  setSettings: React.Dispatch<React.SetStateAction<Settings>>;
 }
 
 const isEnglish = navigator.language.toLowerCase().startsWith('en');
@@ -53,9 +55,19 @@ export default function SettingsScreen({ downloadPath, onDownloadPathChange, set
                 </div>
                 <button 
                   onClick={() => setSettings(s => ({ ...s, theme: s.theme === 'dark' ? 'light' : 'dark' }))}
-                  className={`w-12 h-6 rounded-full relative transition-colors ${settings.theme === 'dark' ? 'bg-white' : 'bg-[#2a2a2a]'}`}
+                  className={`w-12 h-6 rounded-full relative ${settings.theme === 'dark' ? 'bg-white' : 'bg-[#2a2a2a]'}`}
                 >
-                  <div className={`absolute top-1 w-4 h-4 bg-black rounded-full transition-transform ${settings.theme === 'dark' ? 'right-1' : 'left-1 bg-white'}`}></div>
+                  <motion.div
+                    className="absolute top-1 w-4 h-4 flex items-center justify-center"
+                    animate={{ x: settings.theme === 'dark' ? 25 : 5, rotate: settings.theme === 'dark' ? 0 : 180 }}
+                    transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                  >
+                    {settings.theme === 'dark' ? (
+                      <Moon className="w-4 h-4 text-black" strokeWidth={4.0} />
+                    ) : (
+                      <Sun className="w-4 h-4 text-black" strokeWidth={4.0} />
+                    )}
+                  </motion.div>
                 </button>
               </div>
             </div>
@@ -147,7 +159,7 @@ export default function SettingsScreen({ downloadPath, onDownloadPathChange, set
               <h3 className="font-semibold text-lg mb-1">{t('Advanced', 'Avançado')}</h3>
               <p className="text-white/50 text-sm mb-4">{t('Deep-level application behavior and process settings.', 'Comportamento avançado e tarefas em segundo plano.')}</p>
               
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-4 mb-4">
                 <span className="text-white/70">{t('Max simultaneous downloads', 'Máximo de downloads simultâneos')}</span>
                 <input 
                   type="number" 
@@ -161,6 +173,23 @@ export default function SettingsScreen({ downloadPath, onDownloadPathChange, set
                   }}
                   className="w-20 bg-[#1a1a1a] border border-white/5 rounded-lg px-4 py-2 text-white text-center focus:outline-none focus:ring-1 focus:ring-white/20"
                 />
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Cookie className="w-4 h-4 text-white/50" />
+                  <span className="text-white/70">{t('Use browser cookies', 'Usar cookies do navegador')}</span>
+                </div>
+                <button 
+                  onClick={() => setSettings(s => ({ ...s, useBrowserCookies: !s.useBrowserCookies }))}
+                  className={`w-12 h-6 rounded-full relative ${settings.useBrowserCookies ? 'bg-green-500' : 'bg-[#2a2a2a]'}`}
+                >
+                  <motion.div
+                    className="absolute top-1 w-4 h-4 bg-white rounded-full"
+                    animate={{ x: settings.useBrowserCookies ? 24 : 0 }}
+                    transition={{ type: 'spring', stiffness: 500, damping: 30 }}
+                  />
+                </button>
               </div>
             </div>
           </div>

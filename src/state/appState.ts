@@ -6,6 +6,7 @@ const defaultSettings: Settings = {
   soundEnabled: false,
   desktopNotification: false,
   maxDownloads: 3,
+  useBrowserCookies: false,
 };
 
 export function createAppState() {

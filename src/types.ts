@@ -40,4 +40,5 @@ export interface Settings {
   soundEnabled: boolean;
   desktopNotification: boolean;
   maxDownloads: number;
+  useBrowserCookies: boolean;
 }

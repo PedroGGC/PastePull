@@ -63,10 +63,10 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: https:; media-src 'self' asset: https:; connect-src 'self' https://*.youtube.com https://*.googlevideo.com",
       "assetProtocol": {
         "enable": true,
-        "scope": ["**"]
+        "scope": ["$APPDATA/**", "$DOWNLOAD/**", "$HOME/Downloads/**", "$HOME/Videos/**"]
       }
     }
   }
