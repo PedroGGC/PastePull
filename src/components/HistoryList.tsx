@@ -1,5 +1,6 @@
-import { useMemo } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { useMemo, useRef } from 'react';
+import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { Film, Music, FileDown, FolderOpen, Clock, HardDrive, Video, Search, Trash2, CheckSquare, Square } from 'lucide-react';
 import { DownloadHistoryItem } from '../types';
 import { formatRelativeTime, inferFileType } from '../utils/formatters';
@@ -35,6 +36,7 @@ export function HistoryList({
   onDelete,
 }: HistoryListProps) {
   const selectionMode = selectedItems.length > 0;
+  const parentRef = useRef<HTMLDivElement>(null);
   
   const filteredItems = useMemo(() => {
     return items
@@ -44,11 +46,29 @@ export function HistoryList({
       .sort((a, b) => sortOrder === 'oldest' ? a.completedAt - b.completedAt : b.completedAt - a.completedAt);
   }, [items, searchQuery, sortOrder]);
 
+  const rowVirtualizer = useVirtualizer({
+    count: filteredItems.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 110,
+    overscan: 5,
+  });
+
   const renderThumbnail = (item: DownloadHistoryItem) => {
+    let imgSrc = '';
+    
     if (item.thumbnailDataUrl?.startsWith('data:') || item.thumbnailDataUrl?.startsWith('http')) {
+      imgSrc = item.thumbnailDataUrl;
+    } else if (item.filepath) {
+      // Usar Tauri Asset Protocol nativo da v2
+      const pathWithoutExt = item.filepath.replace(/\.[^/.\\]+$/, '');
+      const thumbPath = `${pathWithoutExt}.jpg`; 
+      imgSrc = convertFileSrc(thumbPath);
+    }
+
+    if (imgSrc) {
       return (
         <img 
-          src={item.thumbnailDataUrl} 
+          src={imgSrc} 
           alt={item.title} 
           className="w-full h-full object-cover"
           onError={(e) => { 
@@ -74,13 +94,33 @@ export function HistoryList({
           </p>
         </div>
       ) : (
-        <div className="grid gap-3">
-          {filteredItems.map((item) => (
-            <div 
-              key={item.filepath || item.id} 
-              className={`group flex flex-col sm:flex-row items-center gap-4 p-4 bg-[#1a1a1a] border border-white/5 rounded-2xl hover:bg-[#1e1e1e] transition-colors ${selectionMode ? 'cursor-default' : ''}`}
-              onClick={() => !selectionMode && onItemClick(item)}
-            >
+        <div ref={parentRef} className="max-h-[65vh] overflow-y-auto overflow-x-hidden pr-2 scrollbar-thin">
+          <div
+            style={{
+              height: `${rowVirtualizer.getTotalSize()}px`,
+              width: '100%',
+              position: 'relative',
+            }}
+          >
+            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+              const item = filteredItems[virtualRow.index];
+              return (
+              <div 
+                key={item.filepath || item.id} 
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  height: `${virtualRow.size}px`,
+                  transform: `translateY(${virtualRow.start}px)`,
+                }}
+                className="pb-3"
+              >
+                <div 
+                  className={`group flex flex-col sm:flex-row items-center gap-4 p-4 bg-[#1a1a1a] border border-white/5 rounded-2xl hover:bg-[#1e1e1e] transition-colors ${selectionMode ? 'cursor-default' : ''}`}
+                  onClick={() => !selectionMode && onItemClick(item)}
+                >
               <div className="shrink-0 flex items-center gap-3">
                 <button
                   onClick={(e) => {
@@ -171,8 +211,11 @@ export function HistoryList({
                   <Trash2 size={16} />
                 </button>
               </div>
-            </div>
-          ))}
+                </div>
+              </div>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>

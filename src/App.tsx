@@ -72,12 +72,22 @@ export default function App() {
   useEffect(() => { localStorage.setItem('ud_download_path', downloadPath); }, [downloadPath]);
   useEffect(() => { settingsRef.current = settings; localStorage.setItem('ud_settings', JSON.stringify(settings)); }, [settings]);
 
+  // Opt 4: memoizar filtros caros para não re-executar O(N) dezenas de vezes no render
+  const activeItems = useMemo(() => downloadItems.filter(i => i.status === 'active'), [downloadItems]);
+  const deletedItems = useMemo(() => downloadItems.filter(i => i.status === 'deleted'), [downloadItems]);
+  const displayedItems = showArchive ? deletedItems : activeItems;
+
   const loadThumbnail = useCallback(async (filepath: string): Promise<string | null> => {
     const cached = thumbnailCache.current[filepath];
     if (cached) return cached;
     try {
       const result = await invoke<string>('read_thumbnail_as_base64', { path: filepath });
       thumbnailCache.current[filepath] = result;
+      // Opt 7: LRU cache simples no thumbnailLoader para que App.tsx não exploda na memória a longo prazo
+      const keys = Object.keys(thumbnailCache.current);
+      if (keys.length > 50) {
+        delete thumbnailCache.current[keys[0]];
+      }
       return result;
     } catch { return null; }
   }, []);
@@ -160,12 +170,12 @@ export default function App() {
     try {
       await invoke('cancel_download', { id });
       setCurrentProgress(curr => { const next = { ...curr }; delete next[id]; return next; });
-      if (downloadPath) {
-        const dir = downloadPath + (downloadPath.endsWith('\\') || downloadPath.endsWith('/') ? '' : '\\');
-        activeDownloadsRef.current.delete(dir);
-      }
+      // Fix 2: NÃO remover do activeDownloadsRef aqui.
+      // O diretório permanece protegido até o backend emitir status:"idle"
+      // (após o cleanup de 1500ms), fechando a janela onde o watcher detectava
+      // arquivos .part/.ytdl como "restaurados" antes do cleanup terminar.
     } catch (error) { console.error('Cancel error:', error); }
-  }, [downloadPath]);
+  }, []);
 
   const handleOpenFolder = useCallback(async (path: string) => {
     try { await invoke('open_folder_natively', { path }); } 
@@ -325,8 +335,8 @@ export default function App() {
                       )}
                       {downloadItems.length > 0 && (
                         <div className="flex items-center gap-2">
-                          <button onClick={() => selectedItems.length > 0 ? setSelectedItems([]) : setSelectedItems((showArchive ? downloadItems.filter(i => i.status === 'deleted') : downloadItems.filter(i => i.status === 'active')).map(i => i.id))} className="flex items-center gap-1.5 bg-white/5 hover:bg-white/10 text-white/70 px-3 py-1.5 rounded-lg text-xs font-semibold uppercase">{selectedItems.length > 0 ? <CheckSquare size={14} /> : <Square size={14} />}<Trash2 size={14} /></button>
-                          <span className="bg-white/10 text-white/70 text-xs font-bold px-3 py-1 rounded-full">{showArchive ? downloadItems.filter(i => i.status === 'deleted').length : downloadItems.filter(i => i.status === 'active').length} {t('file', 'arquivo')}</span>
+                          <button onClick={() => selectedItems.length > 0 ? setSelectedItems([]) : setSelectedItems(displayedItems.map(i => i.id))} className="flex items-center gap-1.5 bg-white/5 hover:bg-white/10 text-white/70 px-3 py-1.5 rounded-lg text-xs font-semibold uppercase">{selectedItems.length > 0 ? <CheckSquare size={14} /> : <Square size={14} />}<Trash2 size={14} /></button>
+                          <span className="bg-white/10 text-white/70 text-xs font-bold px-3 py-1 rounded-full">{displayedItems.length} {t('file', 'arquivo')}</span>
                         </div>
                       )}
                     </div>
@@ -342,11 +352,11 @@ export default function App() {
                     <span className="text-sm font-semibold text-white">{selectedItems.length} {t('selected', 'selecionado(s)')}</span>
                     <div className="flex items-center gap-3">
                       <button onClick={() => setSelectedItems([])} className="px-4 py-2 rounded-lg text-sm font-semibold text-white/70 hover:text-white">{t('Cancel', 'Cancelar')}</button>
-                      <button onClick={() => setDeleteModal({ show: true, items: (showArchive ? downloadItems.filter(i => i.status === 'deleted') : downloadItems.filter(i => i.status === 'active')).filter(i => selectedItems.includes(i.id)), mode: showArchive ? 'history' : 'trash' })} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold bg-red-500 hover:bg-red-600"><Trash2 size={16} />{showArchive ? t('Remove from history', 'Remover') : t('Move to trash', 'Mover')}</button>
+                      <button onClick={() => setDeleteModal({ show: true, items: displayedItems.filter(i => selectedItems.includes(i.id)), mode: showArchive ? 'history' : 'trash' })} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold bg-red-500 hover:bg-red-600"><Trash2 size={16} />{showArchive ? t('Remove from history', 'Remover') : t('Move to trash', 'Mover')}</button>
                     </div>
                   </div>
                 )}
-                <HistoryList items={showArchive ? downloadItems.filter(i => i.status === 'deleted') : downloadItems.filter(i => i.status === 'active')} searchQuery={searchQuery} setSearchQuery={setSearchQuery} showArchive={showArchive} sortOrder={sortOrder} onItemClick={() => {}} onRedownload={handleRedownload} onOpenFolder={handleOpenFolder} downloadPath={downloadPath} selectedItems={selectedItems} setSelectedItems={setSelectedItems} onDelete={(item) => setDeleteModal({ show: true, items: [item], mode: item.status === 'deleted' ? 'history' : 'trash' })} />
+                <HistoryList items={displayedItems} searchQuery={searchQuery} setSearchQuery={setSearchQuery} showArchive={showArchive} sortOrder={sortOrder} onItemClick={() => {}} onRedownload={handleRedownload} onOpenFolder={handleOpenFolder} downloadPath={downloadPath} selectedItems={selectedItems} setSelectedItems={setSelectedItems} onDelete={(item) => setDeleteModal({ show: true, items: [item], mode: item.status === 'deleted' ? 'history' : 'trash' })} />
               </div>
             )}
 

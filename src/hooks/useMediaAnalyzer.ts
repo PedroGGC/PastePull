@@ -35,12 +35,17 @@ export function useMediaAnalyzer(url: string, options?: UseMediaAnalyzerOptions)
       return;
     }
 
+    // Opt 2 (frontend): prevenir parse e setStates se o usuário mudou a URL logo depois
+    let isAborted = false;
+
     const timeout = setTimeout(async () => {
+      if (isAborted) return;
       setIsAnalyzing(true);
       setMediaCapabilities({ video: true, audio: true });
 
       try {
         const metadataJson = await invoke<string>('get_video_metadata', { url });
+        if (isAborted) return;
         const meta = JSON.parse(metadataJson);
         
         metadataTitleRef.current = meta.title || '';
@@ -84,15 +89,19 @@ export function useMediaAnalyzer(url: string, options?: UseMediaAnalyzerOptions)
         } else {
           options?.onError?.('Erro ao analisar o link');
         }
+        if (isAborted) return;
         setAnalyzedMedia(null);
         setMediaCapabilities({ video: true, audio: true });
         setVideoQualities(['BEST QUALITY']);
       } finally {
-        setIsAnalyzing(false);
+        if (!isAborted) setIsAnalyzing(false);
       }
     }, 1000);
 
-    return () => clearTimeout(timeout);
+    return () => {
+      isAborted = true;
+      clearTimeout(timeout);
+    };
   }, [url]);
 
   return {

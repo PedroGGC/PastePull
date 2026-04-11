@@ -311,36 +311,43 @@ pub async fn get_video_metadata(app: AppHandle, url: String) -> Result<String, S
     let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
     let ytdlp_path = resource_dir.join("essentials").join("yt-dlp.exe");
 
-    tokio::task::spawn_blocking(move || {
-        let mut cmd = std::process::Command::new(&ytdlp_path);
-        #[cfg(target_os = "windows")]
-        use std::os::windows::process::CommandExt;
-        #[cfg(target_os = "windows")]
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    // Opt 2: Criar comando std::process para definir a flag apenas de Windows, depois converter
+    let mut std_cmd = std::process::Command::new(&ytdlp_path);
+    #[cfg(target_os = "windows")]
+    use std::os::windows::process::CommandExt;
+    #[cfg(target_os = "windows")]
+    std_cmd.creation_flags(0x08000000);
 
-        let output = cmd
-            .arg("--dump-json")
-            .arg("--no-playlist")
-            .arg(&url)
-            .env("PYTHONIOENCODING", "utf-8")
-            .env("PYTHONUTF8", "1")
-            .output()
-            .map_err(|e| e.to_string())?;
+    let mut cmd = tokio::process::Command::from(std_cmd);
 
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).to_string())
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            error!("get_video_metadata failed. STDERR: {}", stderr.trim());
-            Err(if stderr.trim().is_empty() {
-                "Falha ao obter metadados".to_string()
+    let output_future = cmd
+        .arg("--dump-json")
+        .arg("--no-playlist")
+        .arg(&url)
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUTF8", "1")
+        .output();
+
+    // Opt 2: Timeout de 30 segundos (evita locks eternos em anti-bot ou lag de rede)
+    let output_result = tokio::time::timeout(std::time::Duration::from_secs(30), output_future).await;
+
+    match output_result {
+        Ok(Ok(output)) => {
+            if output.status.success() {
+                Ok(String::from_utf8_lossy(&output.stdout).to_string())
             } else {
-                stderr
-            })
-        }
-    })
-    .await
-    .map_err(|e| e.to_string())?
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                error!("get_video_metadata failed. STDERR: {}", stderr.trim());
+                Err(if stderr.trim().is_empty() {
+                    "Falha ao obter metadados".to_string()
+                } else {
+                    stderr
+                })
+            }
+        },
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err("Timeout ao obter metadados (30s). O site pode estar bloqueando a requisição ou a rede está instável.".to_string()),
+    }
 }
 
 #[tauri::command]
@@ -412,13 +419,15 @@ pub fn load_history(app: AppHandle) -> Result<Vec<HistoryEntry>, String> {
     crate::history_ops::load_history(app)
 }
 
+// Fix 4: comando convertido para async — o sleep de 3500ms agora é não-bloqueante
+// e o PowerShell é aguardado via spawn_blocking para não travar o runtime do Tauri.
 #[tauri::command]
-pub fn move_multiple_to_trash(paths: Vec<String>) -> Result<(), String> {
+pub async fn move_multiple_to_trash(paths: Vec<String>) -> Result<(), String> {
     info!("Moving {} file(s) to trash", paths.len());
     
     #[cfg(target_os = "windows")]
     {
-        // First, collect all stems from paths being deleted
+        // Coletar stems e paths no contexto sync (CPU-bound, sem I/O bloqueante)
         let mut stems_to_delete: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         let mut escaped_paths: Vec<String> = Vec::new();
         
@@ -431,28 +440,30 @@ pub fn move_multiple_to_trash(paths: Vec<String>) -> Result<(), String> {
             escaped_paths.push(filepath.replace("'", "''"));
         }
         
-        // Delete all main files in a SINGLE PowerShell command
+        // Fix 4: lançar o PowerShell em spawn_blocking (não bloqueia o runtime async)
         if !escaped_paths.is_empty() {
             let files_array = escaped_paths.join("','");
             let ps_command = format!(
                 "Add-Type -AssemblyName Microsoft.VisualBasic; @('{}') | ForEach-Object {{ [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($_, 'OnlyErrorDialogs', 'SendToRecycleBin') }}",
                 files_array
             );
-            
-            let mut cmd = std::process::Command::new("powershell.exe");
-            cmd.args(["-WindowStyle", "Hidden", "-Command", &ps_command]);
-            #[cfg(target_os = "windows")]
-            cmd.creation_flags(0x08000000);
-            let _ = cmd.spawn();
-            
-            info!("Moved {} file(s) to trash", paths.len());
+            let file_count = paths.len();
+            tauri::async_runtime::spawn_blocking(move || {
+                let mut cmd = std::process::Command::new("powershell.exe");
+                cmd.args(["-WindowStyle", "Hidden", "-Command", &ps_command]);
+                #[cfg(target_os = "windows")]
+                cmd.creation_flags(0x08000000);
+                // Aguarda o PowerShell concluir (garante que os arquivos foram movidos)
+                let _ = cmd.spawn().and_then(|mut child| child.wait());
+                info!("Moved {} file(s) to trash", file_count);
+            }).await.map_err(|e| e.to_string())?;
         }
         
-        // Wait longer for all files to be fully deleted
-        std::thread::sleep(std::time::Duration::from_millis(3500));
+        // Fix 4: sleep não-bloqueante — não trava a fila de comandos do Tauri
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         info!("Finished waiting for file deletions");
         
-        // Now check and delete orphaned thumbnails
+        // Checar e deletar thumbnails órfãos
         let mut thumbnails_to_check: Vec<(PathBuf, String)> = Vec::new();
         
         for filepath in &paths {
@@ -470,7 +481,6 @@ pub fn move_multiple_to_trash(paths: Vec<String>) -> Result<(), String> {
             
             info!("Checking thumbnail for stem: {} (deleting {} files with this stem)", stem, count_being_deleted);
             
-            // Check for common image extensions
             let image_exts = ["jpg", "jpeg", "png", "webp", "gif", "bmp"];
             
             for ext in &image_exts {
@@ -480,13 +490,10 @@ pub fn move_multiple_to_trash(paths: Vec<String>) -> Result<(), String> {
                 if thumb_path.exists() {
                     info!("Thumbnail exists: {:?}", thumb_path);
                     
-                    // Count total media files with same stem in folder (excluding images)
                     let mut total_in_folder = 0usize;
-                    let image_exts = ["jpg", "jpeg", "png", "webp", "gif", "bmp"];
                     if let Ok(entries) = std::fs::read_dir(&parent) {
                         for entry in entries.flatten() {
                             let entry_path = entry.path();
-                            // Skip image files (thumbnails)
                             if let Some(ext) = entry_path.extension() {
                                 let ext_str = ext.to_string_lossy().to_lowercase();
                                 if image_exts.contains(&ext_str.as_str()) {
@@ -504,8 +511,6 @@ pub fn move_multiple_to_trash(paths: Vec<String>) -> Result<(), String> {
                     
                     info!("Total media files with stem '{}' in folder: {}", stem_lower, total_in_folder);
                     
-                    // Only delete thumbnail if NO media files with this stem remain after deletion
-                    // Use saturating subtraction to prevent underflow
                     let remaining = total_in_folder.saturating_sub(count_being_deleted);
                     if remaining == 0 {
                         let thumb_str = thumb_path.to_string_lossy().to_string();
@@ -513,15 +518,15 @@ pub fn move_multiple_to_trash(paths: Vec<String>) -> Result<(), String> {
                             "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('{}', 'OnlyErrorDialogs', 'SendToRecycleBin')",
                             thumb_str.replace("'", "''")
                         );
-                        
-                        let mut thumb_cmd = std::process::Command::new("powershell.exe");
-                        thumb_cmd.args(["-WindowStyle", "Hidden", "-Command", &thumb_ps_command]);
-                        #[cfg(target_os = "windows")]
-                        thumb_cmd.creation_flags(0x08000000);
-                        let _ = thumb_cmd.spawn();
-                        
-                        std::thread::sleep(std::time::Duration::from_millis(300));
-                        info!("Thumbnail moved to trash: {}", thumb_str);
+                        let thumb_str_log = thumb_str.clone();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            let mut thumb_cmd = std::process::Command::new("powershell.exe");
+                            thumb_cmd.args(["-WindowStyle", "Hidden", "-Command", &thumb_ps_command]);
+                            #[cfg(target_os = "windows")]
+                            thumb_cmd.creation_flags(0x08000000);
+                            let _ = thumb_cmd.spawn().and_then(|mut c| c.wait());
+                            info!("Thumbnail moved to trash: {}", thumb_str_log);
+                        }).await.map_err(|e| e.to_string())?;
                         break;
                     } else {
                         info!("Not deleting thumbnail - {} media file(s) with same stem remain after deletion", remaining);

@@ -128,26 +128,5 @@ pub fn scan_download_folder(folder_path: String) -> Result<Vec<HistoryEntry>, St
 
     items.sort_by(|a, b| b.completed_at.cmp(&a.completed_at));
 
-    const MAX_THUMBNAILS: usize = 10;
-    for (i, item) in items.iter_mut().enumerate() {
-        if i >= MAX_THUMBNAILS {
-            break;
-        }
-
-        if let Some(parent) = PathBuf::from(&item.filepath).parent() {
-            if let Some(stem) = PathBuf::from(&item.filepath).file_stem() {
-                let thumb_filename = format!("{}.jpg", stem.to_string_lossy());
-                let thumb_path = parent.join(&thumb_filename);
-                
-                if thumb_path.exists() {
-                    if let Ok(data) = std::fs::read(&thumb_path) {
-                        let base64 = crate::utils::base64_encode(&data);
-                        item.thumbnail_data_url = Some(format!("data:image/jpeg;base64,{}", base64));
-                    }
-                }
-            }
-        }
-    }
-
     Ok(items)
 }

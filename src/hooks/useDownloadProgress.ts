@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, Dispatch, SetStateAction, useRef } from 'react';
+import { useEffect, useCallback, Dispatch, SetStateAction, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { DownloadProgress, DownloadHistoryItem } from '../types';
@@ -26,7 +26,10 @@ export function useDownloadProgress({
   playNotificationSound,
   showNotification,
 }: UseDownloadProgressProps) {
-  const [metadataTitleCache, setMetadataTitleCache] = useState<Record<string, { title: string; thumbnail: string }>>({});
+  // Fix 6: ref em vez de state — evita re-registro do listener a cada metadata cacheado.
+  // O listener 'download-progress' é registrado apenas 1x (dependência []) e 
+  // lê o cache via ref sem precisar de re-bind.
+  const metadataTitleCacheRef = useRef<Record<string, { title: string; thumbnail: string }>>({});
   const processedCompletedRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
@@ -34,7 +37,8 @@ export function useDownloadProgress({
       const p = event.payload;
       if (!p.id) return;
 
-      const cachedMeta = metadataTitleCache[p.url];
+      // Fix 6: lê do ref (sem causar re-render ou re-registration do listener)
+      const cachedMeta = metadataTitleCacheRef.current[p.url];
 
       setCurrentProgress((prev) => {
         if (!prev || !prev[p.id]) {
@@ -124,6 +128,8 @@ export function useDownloadProgress({
               setCurrentProgress((curr) => {
                 const next = { ...curr };
                 delete next[p.id];
+                // Fix 7: limpar o set para evitar memory leak de UUIDs por sessão
+                processedCompletedRef.current.delete(p.id);
                 return next;
               });
             }, 200);
@@ -169,6 +175,8 @@ export function useDownloadProgress({
             setCurrentProgress((curr) => {
               const next = { ...curr };
               delete next[p.id];
+              // Fix 7: limpar o set para evitar memory leak de UUIDs por sessão
+              processedCompletedRef.current.delete(p.id);
               return next;
             });
           }, 4000);
@@ -182,25 +190,18 @@ export function useDownloadProgress({
     return () => {
       unlisten.then((fn) => fn());
     };
-  }, [metadataTitleCache]);
-
-  useEffect(() => {
-    if (!currentProgress) return;
-    (Object.values(currentProgress) as DownloadProgress[]).forEach((p) => {
-      if (p.thumbnail_path && !p.thumbnailBase64) {
-        invoke<string>('read_thumbnail_as_base64', { path: p.thumbnail_path })
-          .then((dataUrl) => {
-            setCurrentProgress((prev) => ({
-              ...prev,
-              [p.id]: { ...prev[p.id], thumbnailBase64: dataUrl }
-            }));
-          }).catch(() => {});
-      }
-    });
-  }, [currentProgress]);
+  }, []); // Fix 6: dependência vazia — listener registrado 1x, não re-registra ao cachear metadata
 
   const cacheMetadata = useCallback((url: string, title: string, thumbnail: string) => {
-    setMetadataTitleCache((prev) => ({ ...prev, [url]: { title, thumbnail } }));
+    // Fix 6: escrever diretamente no ref (sem setState, sem re-render, sem re-bind do listener)
+    metadataTitleCacheRef.current[url] = { title, thumbnail };
+    
+    // Opt 10: LRU simples com limite de 100 metadados pra não estourar a memória num longo tempo de app aberto
+    const keys = Object.keys(metadataTitleCacheRef.current);
+    if (keys.length > 100) {
+      const oldest = keys[0];
+      delete metadataTitleCacheRef.current[oldest];
+    }
   }, []);
 
   return { cacheMetadata };

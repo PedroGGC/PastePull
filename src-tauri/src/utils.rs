@@ -61,6 +61,14 @@ pub fn base64_encode(data: &[u8]) -> String {
     result
 }
 
+pub static BROWSER_CACHE: Lazy<Option<String>> = Lazy::new(|| {
+    find_available_browser()
+});
+
+pub fn get_cached_browser() -> Option<String> {
+    BROWSER_CACHE.clone()
+}
+
 pub fn find_available_browser() -> Option<String> {
     let appdata = std::env::var("APPDATA").unwrap_or_default();
     let localappdata = std::env::var("LOCALAPPDATA").unwrap_or_default();

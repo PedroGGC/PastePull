@@ -1,8 +1,18 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
+
+// Fix 1: registry de stop flags por caminho monitorado.
+// Garante que apenas uma thread por path exista em qualquer momento.
+use once_cell::sync::Lazy;
+use std::collections::HashMap;
+
+static WATCHER_STOP_FLAGS: Lazy<Mutex<HashMap<String, Arc<AtomicBool>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct FileChangeEvent {
@@ -30,6 +40,17 @@ pub fn start_file_watcher(app: AppHandle, path: String) -> Result<(), String> {
         return Err("Caminho não existe".to_string());
     }
 
+    // Fix 1: sinalizar a thread anterior (se houver) para parar antes de criar uma nova.
+    let stop_flag = {
+        let mut flags = WATCHER_STOP_FLAGS.lock().unwrap();
+        if let Some(old_flag) = flags.get(&path) {
+            old_flag.store(true, Ordering::Relaxed);
+        }
+        let new_flag = Arc::new(AtomicBool::new(false));
+        flags.insert(path.clone(), Arc::clone(&new_flag));
+        new_flag
+    };
+
     let current_files = get_all_files_in_folder(&watch_path);
     let known_files: HashSet<String> = current_files.iter().cloned().collect();
     
@@ -39,8 +60,19 @@ pub fn start_file_watcher(app: AppHandle, path: String) -> Result<(), String> {
     std::thread::spawn(move || {
         let mut known = known_files;
         
-loop {
-            std::thread::sleep(Duration::from_secs(2));
+        loop {
+            // Fix 1: verificar stop flag a cada iteração
+            if stop_flag.load(Ordering::Relaxed) {
+                break;
+            }
+
+            // Opt 6: Reduzimos a frequência de disco do watcher para 4 segundos.
+            std::thread::sleep(Duration::from_secs(4));
+
+            // Checar novamente após o sleep (pode ter sido sinalizado durante a espera)
+            if stop_flag.load(Ordering::Relaxed) {
+                break;
+            }
             
             let current_files = get_all_files_in_folder(&watch_path_clone);
             let current_set: HashSet<String> = current_files.iter().cloned().collect();
