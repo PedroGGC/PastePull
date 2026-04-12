@@ -76,7 +76,7 @@ fn mod_threads_in_tree(root_pid: u32, suspend: bool) -> Result<(), String> {
     unsafe {
         let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
         if snapshot.is_null() {
-            return Err("Falha ao criar snapshot".to_string());
+            return Err("Failed to create snapshot".to_string());
         }
         let mut entry: THREADENTRY32 = std::mem::zeroed();
         entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;

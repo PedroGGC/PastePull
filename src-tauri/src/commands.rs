@@ -30,11 +30,12 @@ pub async fn start_download(
     state: State<'_, SharedDownloadState>,
 ) -> Result<String, String> {
     if url.is_empty() {
-        return Err("URL não fornecida".to_string());
+        return Err("URL not provided".to_string());
     }
 
+    // URL validation: only http/https allowed
     if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err("URL inválida".to_string());
+        return Err("Invalid URL".to_string());
     }
 
     let task_id = Uuid::new_v4().to_string();
@@ -258,10 +259,10 @@ pub fn pause_download(
 
     let mut s = state.lock().unwrap();
     let Some(handle) = s.get_mut(&id) else {
-        return Err("Download não encontrado".to_string());
+        return Err("Download not found".to_string());
     };
     let Some(ref child) = handle.process else {
-        return Err("Nenhum processo ativo para este download".to_string());
+        return Err("No active process for this download".to_string());
     };
     let pid = child.id();
 
@@ -296,11 +297,17 @@ pub async fn select_download_folder(app: AppHandle) -> Result<String, String> {
         .dialog()
         .file()
         .set_title("Select Download Folder")
-        .pick_folder(move |folder: Option<tauri_plugin_dialog::FilePath>| {
+        .pick_folder(move |folder| {
             let _ = tx.send(folder);
         });
 
-    match rx.recv() {
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        rx.recv()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    match result {
         Ok(Some(path)) => Ok(path.to_string()),
         _ => Err("No folder selected".to_string()),
     }
@@ -311,7 +318,6 @@ pub async fn get_video_metadata(app: AppHandle, url: String) -> Result<String, S
     let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
     let ytdlp_path = resource_dir.join("essentials").join("yt-dlp.exe");
 
-    // Opt 2: Criar comando std::process para definir a flag apenas de Windows, depois converter
     let mut std_cmd = std::process::Command::new(&ytdlp_path);
     #[cfg(target_os = "windows")]
     use std::os::windows::process::CommandExt;
@@ -328,8 +334,8 @@ pub async fn get_video_metadata(app: AppHandle, url: String) -> Result<String, S
         .env("PYTHONUTF8", "1")
         .output();
 
-    // Opt 2: Timeout de 30 segundos (evita locks eternos em anti-bot ou lag de rede)
-    let output_result = tokio::time::timeout(std::time::Duration::from_secs(30), output_future).await;
+    let timeout_duration = std::time::Duration::from_secs(30);
+    let output_result = tokio::time::timeout(timeout_duration, output_future).await;
 
     match output_result {
         Ok(Ok(output)) => {
@@ -432,7 +438,7 @@ pub async fn move_multiple_to_trash(paths: Vec<String>) -> Result<(), String> {
         let mut escaped_paths: Vec<String> = Vec::new();
         
         for filepath in &paths {
-            let path = PathBuf::from(filepath);
+            let path = PathBuf::from(filepath);    
             if let Some(stem) = path.file_stem() {
                 let stem_str = stem.to_string_lossy().to_lowercase();
                 *stems_to_delete.entry(stem_str).or_insert(0) += 1;

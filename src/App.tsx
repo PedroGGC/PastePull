@@ -37,7 +37,7 @@ export default function App() {
       const saved = localStorage.getItem('ud_settings');
       if (saved) return JSON.parse(saved);
     } catch {}
-    return { theme: 'dark', soundEnabled: false, desktopNotification: false, maxDownloads: 3, useBrowserCookies: false };
+    return { theme: 'dark', soundEnabled: false, desktopNotification: false, maxDownloads: 3 };
   });
   
   const [availableQualities, setAvailableQualities] = useState<string[]>([]);
@@ -77,19 +77,27 @@ export default function App() {
   const deletedItems = useMemo(() => downloadItems.filter(i => i.status === 'deleted'), [downloadItems]);
   const displayedItems = showArchive ? deletedItems : activeItems;
 
+  const loadingThumbnails = useRef<Set<string>>(new Set());
+
   const loadThumbnail = useCallback(async (filepath: string): Promise<string | null> => {
     const cached = thumbnailCache.current[filepath];
     if (cached) return cached;
+    while (loadingThumbnails.current.has(filepath)) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    loadingThumbnails.current.add(filepath);
     try {
       const result = await invoke<string>('read_thumbnail_as_base64', { path: filepath });
-      thumbnailCache.current[filepath] = result;
-      // Opt 7: LRU cache simples no thumbnailLoader para que App.tsx não exploda na memória a longo prazo
+      if (result) thumbnailCache.current[filepath] = result;
       const keys = Object.keys(thumbnailCache.current);
       if (keys.length > 50) {
         delete thumbnailCache.current[keys[0]];
       }
       return result;
     } catch { return null; }
+    finally {
+      loadingThumbnails.current.delete(filepath);
+    }
   }, []);
 
   useEffect(() => {
@@ -98,6 +106,12 @@ export default function App() {
       metadataThumbnailRef.current = analyzedMedia.thumbnail;
     }
   }, [analyzedMedia]);
+
+  useEffect(() => {
+    if (analyzedMedia && videoQualities.length > 0 && !availableQualities.includes(selectedQuality)) {
+      setSelectedQuality(videoQualities[0]);
+    }
+  }, [analyzedMedia, videoQualities]);
 
   useEffect(() => {
     if (selectedFormat === 'audio') {
@@ -109,8 +123,7 @@ export default function App() {
       setAvailableQualities(newQualities);
       setSelectedExtension('MP4');
       
-      if (selectedQuality && newQualities.includes(selectedQuality)) {
-      } else {
+      if (!selectedQuality || !newQualities.includes(selectedQuality)) {
         setSelectedQuality(newQualities[0]);
       }
     }
@@ -304,7 +317,7 @@ export default function App() {
         <CancelModal cancelingId={cancelingId} onClose={() => setCancelingId(null)} onConfirm={handleCancelDownload} />
         <DeleteModal modal={deleteModal} isDeleting={isDeleting} onClose={() => setDeleteModal(null)} onConfirmMoveToTrash={handleMoveToTrashClick} onConfirmRemoveFromHistory={handleDeleteFromHistory} />
 
-        <div className="flex-1 overflow-y-auto p-8 pt-12">
+        <div className={`flex-1 p-8 pt-12 ${currentScreen === 'search' || currentScreen === 'settings' ? 'overflow-y-auto' : ''}`}>
           <div className="max-w-3xl mx-auto space-y-12">
             {currentScreen === 'search' && (
               <>

@@ -49,7 +49,7 @@ export function HistoryList({
   const rowVirtualizer = useVirtualizer({
     count: filteredItems.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 110,
+    estimateSize: () => 140,
     overscan: 5,
   });
 
@@ -118,7 +118,7 @@ export function HistoryList({
                 className="pb-3"
               >
                 <div 
-                  className={`group flex flex-col sm:flex-row items-center gap-4 p-4 bg-[#1a1a1a] border border-white/5 rounded-2xl hover:bg-[#1e1e1e] transition-colors ${selectionMode ? 'cursor-default' : ''}`}
+                  className={`group flex flex-col sm:flex-row items-center gap-4 p-4 min-h-36 bg-[#1a1a1a] border border-white/5 rounded-2xl hover:bg-[#1e1e1e] transition-colors ${selectionMode ? 'cursor-default' : ''}`}
                   onClick={() => !selectionMode && onItemClick(item)}
                 >
               <div className="shrink-0 flex items-center gap-3">

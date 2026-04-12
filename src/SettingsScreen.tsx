@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion } from 'motion/react';
-import { Sliders, FolderOpen, Bell, Bolt, Cookie, Moon, Sun } from 'lucide-react';
+import { Sliders, FolderOpen, Bell, Bolt, Moon, Sun, Minus, Plus } from 'lucide-react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Settings } from './types';
 
@@ -82,7 +82,7 @@ export default function SettingsScreen({ downloadPath, onDownloadPathChange, set
             </div>
             <div className="flex-1">
               <h3 className="font-semibold text-lg mb-1">{t('Download Path', 'Caminho de Download')}</h3>
-              <p className="text-white/50 text-sm mb-4">{t('Choose where downloaded MP3s or MP4s are saved.', 'Escolha onde os downloads em MP3 ou MP4 serão salvos.')}</p>
+              <p className="text-white/50 text-sm mb-4">{t('Choose where downloaded files are saved.', 'Escolha onde os downloads serão salvos.')}</p>
               
               <div className="flex items-center gap-4">
                 <div className="flex-1 bg-[#1a1a1a] border border-white/5 rounded-lg px-4 py-3 text-white/70 text-sm font-mono truncate">
@@ -104,7 +104,7 @@ export default function SettingsScreen({ downloadPath, onDownloadPathChange, set
             </div>
             <div className="flex-1">
               <h3 className="font-semibold text-lg mb-1">{t('Notifications', 'Notificações')}</h3>
-              <p className="text-white/50 text-sm mb-4">{t('Alerts and sound settings for completions or errors.', 'Alertas e configurações de som para conclusões e erros.')}</p>
+              <p className="text-white/50 text-sm mb-4">{t('Alerts and sound settings.', 'Alertas e configurações de som.')}</p>
               
               <div className="space-y-3">
                 <label className="flex items-center gap-3 cursor-pointer group">
@@ -157,40 +157,30 @@ export default function SettingsScreen({ downloadPath, onDownloadPathChange, set
             </div>
             <div className="flex-1">
               <h3 className="font-semibold text-lg mb-1">{t('Advanced', 'Avançado')}</h3>
-              <p className="text-white/50 text-sm mb-4">{t('Deep-level application behavior and process settings.', 'Comportamento avançado e tarefas em segundo plano.')}</p>
+              <p className="text-white/50 text-sm mb-4">{t('Deep-level application behavior and process settings.', 'Comportamentos avançados do App.')}</p>
               
-              <div className="flex items-center gap-4 mb-4">
+              <div className="flex items-center justify-between mb-4">
                 <span className="text-white/70">{t('Max simultaneous downloads', 'Máximo de downloads simultâneos')}</span>
-                <input 
-                  type="number" 
-                  min={1}
-                  max={10}
-                  value={settings.maxDownloads}
-                  onChange={(e) => {
-                    const val = parseInt(e.target.value) || 1;
-                    const cappedVal = Math.max(1, Math.min(10, val));
-                    setSettings(s => ({ ...s, maxDownloads: cappedVal }));
-                  }}
-                  className="w-20 bg-[#1a1a1a] border border-white/5 rounded-lg px-4 py-2 text-white text-center focus:outline-none focus:ring-1 focus:ring-white/20"
-                />
+                <div className="flex items-center gap-2">
+                  <button 
+                    onClick={() => setSettings(s => ({ ...s, maxDownloads: Math.max(1, s.maxDownloads - 1) }))}
+                    disabled={settings.maxDownloads <= 1}
+                    className="w-8 h-8 rounded-lg bg-[#2a2a2a] hover:bg-[#333] disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center text-white/70 transition-colors"
+                  >
+                    <Minus className="w-4 h-4" />
+                  </button>
+                  <span className="w-8 text-center font-bold text-white">{settings.maxDownloads}</span>
+                  <button 
+                    onClick={() => setSettings(s => ({ ...s, maxDownloads: Math.min(5, s.maxDownloads + 1) }))}
+                    disabled={settings.maxDownloads >= 5}
+                    className="w-8 h-8 rounded-lg bg-[#2a2a2a] hover:bg-[#333] disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center text-white/70 transition-colors"
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
 
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <Cookie className="w-4 h-4 text-white/50" />
-                  <span className="text-white/70">{t('Use browser cookies', 'Usar cookies do navegador')}</span>
-                </div>
-                <button 
-                  onClick={() => setSettings(s => ({ ...s, useBrowserCookies: !s.useBrowserCookies }))}
-                  className={`w-12 h-6 rounded-full relative ${settings.useBrowserCookies ? 'bg-green-500' : 'bg-[#2a2a2a]'}`}
-                >
-                  <motion.div
-                    className="absolute top-1 w-4 h-4 bg-white rounded-full"
-                    animate={{ x: settings.useBrowserCookies ? 24 : 0 }}
-                    transition={{ type: 'spring', stiffness: 500, damping: 30 }}
-                  />
-                </button>
-              </div>
+              
             </div>
           </div>
         </div>

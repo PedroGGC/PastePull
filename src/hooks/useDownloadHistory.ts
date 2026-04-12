@@ -9,18 +9,17 @@ export function useDownloadHistory() {
   const processingDeleteRef = useRef(new Set<string>());
   const activeDownloadsRef = useRef<Set<string>>(new Set());
 
-  // Opt 3: Debounce na escrita do histórico (evita bater no disco a cada evento de status)
   const debounceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const saveHistoryToBackend = useCallback((items: DownloadHistoryItem[]) => {
     if (debounceTimeoutRef.current) clearTimeout(debounceTimeoutRef.current);
     debounceTimeoutRef.current = setTimeout(async () => {
       try { 
-        await invoke('save_history', { items: items.slice(0, 100) }); 
+        await invoke('save_history', { items: items.slice(0, 1000) }); 
       } catch (err) {
         console.error('[History] Save failed:', err);
       }
-    }, 800); // 800ms de calma antes de bater no Tauri/disco
+    }, 800);
   }, []);
 
   const saveHistoryRef = useRef(saveHistoryToBackend);

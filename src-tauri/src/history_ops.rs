@@ -3,7 +3,7 @@ use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 use crate::types::HistoryEntry;
 
-const MAX_HISTORY_ITEMS: usize = 100;
+const MAX_HISTORY_ITEMS: usize = 1000;
 
 pub fn save_history(app: AppHandle, mut items: Vec<HistoryEntry>) -> Result<(), String> {
     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -39,7 +39,7 @@ pub fn load_history(app: AppHandle) -> Result<Vec<HistoryEntry>, String> {
 pub fn scan_download_folder(folder_path: String) -> Result<Vec<HistoryEntry>, String> {
     let path = PathBuf::from(folder_path);
     if !path.exists() || !path.is_dir() {
-        return Err("Diretório não existe".to_string());
+        return Err("Directory does not exist".to_string());
     }
 
     let mut items = Vec::new();
