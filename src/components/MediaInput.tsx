@@ -1,14 +1,16 @@
+import { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Play, ChevronDown } from 'lucide-react';
+import { Play, ChevronDown, ChevronRight, CheckSquare, Square, AlertTriangle } from 'lucide-react';
 import { DownloadProgress } from '../types';
 import { cleanTitle } from '../utils/formatters';
 import { t } from '../utils/i18n';
 import type { ChangeEvent } from 'react';
+import type { PlaylistItem } from '../hooks/useMediaAnalyzer';
 
 interface MediaInputProps {
   url: string;
   setUrl: (url: string) => void;
-  analyzedMedia: { title: string; thumbnail: string; qualityLabel: string; type: 'video' | 'audio' } | null;
+  analyzedMedia: { title: string; thumbnail: string; qualityLabel: string; type: 'video' | 'audio'; isPlaylist?: boolean; playlistItems?: PlaylistItem[]; playlistCount?: number; playlistWarning?: string } | null;
   isAnalyzing: boolean;
   selectedFormat: 'video' | 'audio';
   setSelectedFormat: (format: 'video' | 'audio') => void;
@@ -26,6 +28,8 @@ interface MediaInputProps {
   setIsExtensionDropdownOpen: (open: boolean) => void;
   isFormatDropdownOpen: boolean;
   setIsFormatDropdownOpen: (open: boolean) => void;
+  onTogglePlaylistItem?: (index: number) => void;
+  onSelectAllPlaylist?: (select: boolean) => void;
 }
 
 export function MediaInput({
@@ -48,10 +52,21 @@ export function MediaInput({
   setIsExtensionDropdownOpen,
   isFormatDropdownOpen,
   setIsFormatDropdownOpen,
+  onTogglePlaylistItem,
+  onSelectAllPlaylist,
 }: MediaInputProps) {
+  const [isPlaylistOpen, setIsPlaylistOpen] = useState(false);
+
   const handleUrlChange = (e: ChangeEvent<HTMLInputElement>) => {
     setUrl(e.target.value);
   };
+
+  const isPlaylist = analyzedMedia?.isPlaylist && analyzedMedia.playlistItems?.length;
+  const playlistItems = analyzedMedia?.playlistItems || [];
+  const availableItems = playlistItems.filter(i => i.available);
+  const selectedCount = availableItems.filter(i => i.selected).length;
+  const totalAvailable = availableItems.length;
+  const playlistWarning = analyzedMedia?.playlistWarning;
 
   const isActiveForThisUrl = currentProgress ? (Object.values(currentProgress) as DownloadProgress[]).some(
     p => p.url === url && p.status !== 'completed'
@@ -94,14 +109,81 @@ export function MediaInput({
                 <div className="text-[9px] font-bold tracking-[0.2em] text-yellow-400/70 mb-1 uppercase">
                   {t('Analysis Complete', 'Análise Concluída')}
                 </div>
-                <p className="text-sm font-bold text-white truncate w-full" title={analyzedMedia.title}>
-                  {cleanTitle(analyzedMedia.title)}
-                </p>
-                <p className="text-[10px] text-white/40 mt-0.5 font-medium">
-                  {t('Ready to pull', 'Pronto para baixar')}
-                </p>
+                <div className="flex items-center gap-2">
+                  <p className="text-sm font-bold text-white truncate w-full" title={analyzedMedia.title}>
+                    {cleanTitle(analyzedMedia.title)}
+                  </p>
+                  {isPlaylist && (
+                    <button 
+                      onClick={() => setIsPlaylistOpen(!isPlaylistOpen)}
+                      className="shrink-0 p-1 hover:bg-white/10 rounded transition-colors"
+                    >
+                      {isPlaylistOpen ? (
+                        <ChevronDown className="w-4 h-4 text-yellow-400" />
+                      ) : (
+                        <ChevronRight className="w-4 h-4 text-yellow-400" />
+                      )}
+                    </button>
+                  )}
+                </div>
+                {isPlaylist ? (
+                  <p className="text-[10px] text-white/40 mt-0.5 font-medium">
+                    {selectedCount} {t('selected', 'selecionado(s)')} / {analyzedMedia.playlistCount} {t('videos', 'vídeos')}
+                  </p>
+                ) : (
+                  <p className="text-[10px] text-white/40 mt-0.5 font-medium">
+                    {t('Ready to pull', 'Pronto para baixar')}
+                  </p>
+                )}
               </div>
             </div>
+
+            <AnimatePresence>
+              {isPlaylist && isPlaylistOpen && analyzedMedia.playlistItems && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="overflow-hidden"
+                >
+                  <div className="border-t border-yellow-400/20 mt-4 pt-4 space-y-2 max-h-60 overflow-y-auto">
+                    <button
+                      onClick={() => onSelectAllPlaylist?.(selectedCount !== totalAvailable)}
+                      className="flex items-center gap-2 text-xs font-bold text-yellow-400 hover:text-yellow-300 transition-colors w-full"
+                    >
+                      {selectedCount === totalAvailable ? (
+                        <CheckSquare size={16} />
+                      ) : (
+                        <Square size={16} />
+                      )}
+                      {t('Select All', 'Selecionar Todos')}
+                      <span className="text-white/40">({selectedCount}/{totalAvailable})</span>
+                    </button>
+                    {analyzedMedia.playlistItems.map((item, index) => {
+                      const isUnavailable = !item.available;
+                      return (
+                        <div 
+                          key={item.id}
+                          onClick={() => !isUnavailable && onTogglePlaylistItem?.(index)}
+                          className={`flex items-center gap-3 ${isUnavailable ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:bg-white/5'} p-2 rounded-lg transition-colors`}
+                        >
+                          {isUnavailable ? (
+                            <Square size={16} className="text-red-500/50 shrink-0" />
+                          ) : item.selected ? (
+                            <CheckSquare size={16} className="text-yellow-400 shrink-0" />
+                          ) : (
+                            <Square size={16} className="text-white/30 shrink-0" />
+                          )}
+                          <span className={`text-xs truncate flex-1 ${isUnavailable ? 'line-through text-white/50' : 'text-white'}`}>{item.title}</span>
+                          <span className={`text-[10px] shrink-0 ${isUnavailable ? 'text-red-500/50' : 'text-white/40'}`}>{item.duration}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </motion.div>
         )}
       </AnimatePresence>

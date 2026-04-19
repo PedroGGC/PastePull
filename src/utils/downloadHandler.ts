@@ -17,6 +17,9 @@ interface DownloadConfig {
   metadataTitle: string;
   metadataThumbnail: string;
   settings: Settings;
+  playlistIndex?: number;
+  playlistTotal?: number;
+  isPlaylist?: boolean;
 }
 
 interface DownloadHandlersProps {
@@ -88,10 +91,13 @@ export async function startDownload({
       quality: selectedQuality || null, 
       formatType: selectedFormat,
       title: titleToUse,
-      extension: selectedExtension
+      extension: selectedExtension,
+      isPlaylist: config.isPlaylist || false
     });
 
-    const intentId = safeBtoa(`${url}_${selectedQuality || ''}_${selectedFormat}_${selectedExtension}`);
+    const intentId = config.isPlaylist && config.playlistIndex
+      ? safeBtoa(`${url}_${selectedQuality || ''}_${selectedFormat}_${selectedExtension}_${config.playlistIndex}`)
+      : safeBtoa(`${url}_${selectedQuality || ''}_${selectedFormat}_${selectedExtension}`);
     
     setDownloadItems(h => {
       const next = h.filter(item => item.id !== intentId);

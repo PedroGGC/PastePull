@@ -64,8 +64,8 @@ export default function App() {
   const metadataTitleRef = useRef<string>('');
   const metadataThumbnailRef = useRef<string>('');
 
-  const { analyzedMedia, isAnalyzing, videoQualities, mediaCapabilities } = useMediaAnalyzer(url, {
-    onError: (message) => showNotification('error', message, 10000)
+  const { analyzedMedia, isAnalyzing, videoQualities, mediaCapabilities, togglePlaylistItem, selectAllPlaylist, getSelectedPlaylistItems } = useMediaAnalyzer(url, {
+    onError: (message) => showNotification('warning', message, 10000)
   });
 
   useEffect(() => { setSelectedItems([]); }, [showArchive]);
@@ -169,15 +169,55 @@ export default function App() {
   const speedValue = totalSpeedMiB >= 100 ? totalSpeedMiB.toFixed(0) : totalSpeedMiB.toFixed(1);
 
   const handleDownloadClick = useCallback(async () => {
-    await startDownload({
-      config: {
-        url, downloadPath, selectedQuality, selectedFormat, selectedExtension,
-        analyzedMedia, metadataTitle: metadataTitleRef.current, metadataThumbnail: metadataThumbnailRef.current, settings
-      },
-      currentProgress, setCurrentProgress, downloadItems, setDownloadItems, activeDownloadsRef,
-      onNotification: showNotification
-    });
-  }, [url, downloadPath, selectedQuality, selectedFormat, selectedExtension, analyzedMedia, settings, currentProgress, downloadItems, showNotification]);
+    const selectedPlaylistItems = analyzedMedia?.isPlaylist 
+      ? getSelectedPlaylistItems() 
+      : [];
+    
+    // Se é playlist e tem itens selecionados, baixar apenas os selecionados
+    if (analyzedMedia?.isPlaylist && selectedPlaylistItems.length > 0) {
+      const total = selectedPlaylistItems.length;
+      let completed = 0;
+      
+      for (const item of selectedPlaylistItems) {
+        completed++;
+        const videoUrl = item.videoUrl || url;
+        await startDownload({
+          config: {
+            url: videoUrl, 
+            downloadPath, 
+            selectedQuality, 
+            selectedFormat, 
+            selectedExtension,
+            analyzedMedia: { title: item.title, qualityLabel: selectedQuality },
+            metadataTitle: item.title, 
+            metadataThumbnail: metadataThumbnailRef.current, 
+            settings,
+            isPlaylist: true,
+            playlistIndex: completed,
+            playlistTotal: total
+          },
+          currentProgress, setCurrentProgress, downloadItems, setDownloadItems, activeDownloadsRef,
+          onNotification: (type, message, duration, onClick) => {
+            // Só mostrar notificação de erro, não de sucesso individual
+            if (type !== 'success') {
+              showNotification(type, message, duration, onClick);
+            }
+          }
+        });
+      }
+    } else {
+      // Download normal (vídeo único ou playlist sem seleção)
+      await startDownload({
+        config: {
+          url, downloadPath, selectedQuality, selectedFormat, selectedExtension,
+          analyzedMedia, metadataTitle: metadataTitleRef.current, metadataThumbnail: metadataThumbnailRef.current, settings,
+          isPlaylist: analyzedMedia?.isPlaylist || false
+        },
+        currentProgress, setCurrentProgress, downloadItems, setDownloadItems, activeDownloadsRef,
+        onNotification: showNotification
+      });
+    }
+  }, [url, downloadPath, selectedQuality, selectedFormat, selectedExtension, analyzedMedia, settings, currentProgress, downloadItems, showNotification, getSelectedPlaylistItems]);
 
   const handleCancelDownload = useCallback(async (id: string) => {
     try {
@@ -325,7 +365,7 @@ export default function App() {
                   <h2 className="text-4xl font-bold tracking-tight">PastePull</h2>
                   <p className="text-white/50 text-lg">{t('Enter a URL and download it :)', 'Insira um URL e baixe :)')}</p>
                 </div>
-                <MediaInput url={url} setUrl={setUrl} analyzedMedia={analyzedMedia} isAnalyzing={isAnalyzing} selectedFormat={selectedFormat} setSelectedFormat={setSelectedFormat} selectedQuality={selectedQuality} setSelectedQuality={setSelectedQuality} availableQualities={availableQualities} isQualityDropdownOpen={isQualityDropdownOpen} setIsQualityDropdownOpen={setIsQualityDropdownOpen} mediaCapabilities={mediaCapabilities} currentProgress={currentProgress} isDownloading={false} selectedExtension={selectedExtension} setSelectedExtension={setSelectedExtension} isExtensionDropdownOpen={isExtensionDropdownOpen} setIsExtensionDropdownOpen={setIsExtensionDropdownOpen} isFormatDropdownOpen={isFormatDropdownOpen} setIsFormatDropdownOpen={setIsFormatDropdownOpen} />
+                <MediaInput url={url} setUrl={setUrl} analyzedMedia={analyzedMedia} isAnalyzing={isAnalyzing} selectedFormat={selectedFormat} setSelectedFormat={setSelectedFormat} selectedQuality={selectedQuality} setSelectedQuality={setSelectedQuality} availableQualities={availableQualities} isQualityDropdownOpen={isQualityDropdownOpen} setIsQualityDropdownOpen={setIsQualityDropdownOpen} mediaCapabilities={mediaCapabilities} currentProgress={currentProgress} isDownloading={false} selectedExtension={selectedExtension} setSelectedExtension={setSelectedExtension} isExtensionDropdownOpen={isExtensionDropdownOpen} setIsExtensionDropdownOpen={setIsExtensionDropdownOpen} isFormatDropdownOpen={isFormatDropdownOpen} setIsFormatDropdownOpen={setIsFormatDropdownOpen} onTogglePlaylistItem={togglePlaylistItem} onSelectAllPlaylist={selectAllPlaylist} />
                 <button onClick={handleDownloadClick} disabled={!url || !analyzedMedia || isAnalyzing} className="w-full bg-[#2a2a2a] hover:bg-[#333] disabled:opacity-50 text-white rounded-xl px-6 py-4 font-bold tracking-wider text-sm">{isAnalyzing ? t('LOADING...', 'CARREGANDO...') : t('DOWNLOAD', 'DOWNLOAD')}</button>
                 <ActiveDownloads currentProgress={currentProgress} onCancel={(id) => setCancelingId(id)} />
                 <RecentActivity items={downloadItems} onItemClick={() => {}} onRedownload={handleRedownload} onOpenFolder={handleOpenFolder} downloadPath={downloadPath} onViewAll={() => setCurrentScreen('downloads')} />

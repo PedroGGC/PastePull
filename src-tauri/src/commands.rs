@@ -26,6 +26,7 @@ pub async fn start_download(
     format_type: Option<String>,
     title: Option<String>,
     extension: Option<String>,
+    is_playlist: Option<bool>,
     app: AppHandle,
     state: State<'_, SharedDownloadState>,
 ) -> Result<String, String> {
@@ -48,7 +49,7 @@ pub async fn start_download(
         return Err(format!("yt-dlp.exe não encontrado: {}", ytdlp_path.display()));
     }
 
-    let (_, args) = build_ytdlp_args(&ytdlp_path, &url, &output_dir, quality.clone(), format_type.clone(), title.clone(), extension.clone())?;
+    let (_, args) = build_ytdlp_args(&ytdlp_path, &url, &output_dir, quality.clone(), format_type.clone(), title.clone(), extension.clone(), is_playlist.unwrap_or(false))?;
 
     let tmp_dir = std::env::temp_dir();
     let stdout_path = tmp_dir.join(format!("ytdlp_stdout_{}.log", task_id));
@@ -353,6 +354,85 @@ pub async fn get_video_metadata(app: AppHandle, url: String) -> Result<String, S
         },
         Ok(Err(e)) => Err(e.to_string()),
         Err(_) => Err("Timeout ao obter metadados (30s). O site pode estar bloqueando a requisição ou a rede está instável.".to_string()),
+    }
+}
+
+#[tauri::command]
+pub async fn get_playlist_items(app: AppHandle, url: String) -> Result<String, String> {
+    let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
+    let ytdlp_path = resource_dir.join("essentials").join("yt-dlp.exe");
+
+    let mut std_cmd = std::process::Command::new(&ytdlp_path);
+    #[cfg(target_os = "windows")]
+    use std::os::windows::process::CommandExt;
+    #[cfg(target_os = "windows")]
+    std_cmd.creation_flags(0x08000000);
+
+    let mut cmd = tokio::process::Command::from(std_cmd);
+
+    let output_future = cmd
+        .arg("--flat-playlist")
+        .arg("--print-json")
+        .arg("--no-download")
+        .arg(&url)
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUTF8", "1")
+        .output();
+
+    let timeout_duration = std::time::Duration::from_secs(60);
+    let output_result = tokio::time::timeout(timeout_duration, output_future).await;
+
+    match output_result {
+        Ok(Ok(output)) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            
+            // Verificar se tem dados no stdout, independente do stderr
+            if stdout.trim().is_empty() {
+                // Se não conseguiu extrair nada, verificar o tipo de erro
+                if stderr.contains("Unable to extract") || stderr.contains("No playlist") || stderr.contains("No entries") {
+                    return Err("Não é uma playlist".to_string());
+                }
+                return Err("Nenhum vídeo encontrado".to_string());
+            }
+            
+            // Processar stdout mesmo se houver erros no stderr
+            let mut items: Vec<String> = Vec::new();
+            for line in stdout.lines() {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
+                    let title = json.get("title").and_then(|v| v.as_str()).unwrap_or("[untitled]");
+                    let video_id = json.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    let availability = json.get("availability").and_then(|v| v.as_str()).unwrap_or("public");
+                    let duration = json.get("duration").and_then(|v| v.as_i64());
+                    
+                    let is_unavailable = availability == "private" 
+                        || availability == "unlisted" 
+                        || json.get("is_unavailable").and_then(|v| v.as_bool()).unwrap_or(false)
+                        || json.get("was_live").and_then(|v| v.as_bool()).unwrap_or(false)
+                        || title.contains("[Deleted video]")
+                        || title.contains("[Removed video]")
+                        || title.contains("[Private video]");
+                    
+                    let status = if is_unavailable { "unavailable" } else { "available" };
+                    
+                    if let Some(sec) = duration {
+                        let minutes = sec / 60;
+                        let seconds = sec % 60;
+                        items.push(format!("{}|{:02}:{:02}|{}|{}", title, minutes, seconds, status, video_id));
+                    } else {
+                        items.push(format!("{}|00:00|{}|{}", title, status, video_id));
+                    }
+                }
+            }
+            
+            if items.is_empty() {
+                Err("Nenhum vídeo encontrado".to_string())
+            } else {
+                Ok(items.join("|||"))
+            }
+        },
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err("Timeout ao obter playlist (60s)".to_string()),
     }
 }
 

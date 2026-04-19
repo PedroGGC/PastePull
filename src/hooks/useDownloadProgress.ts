@@ -47,6 +47,7 @@ export function useDownloadProgress({
         const existing = prev[p.id];
         const updated: DownloadProgress = {
           ...p,
+          thumbnail: existing?.thumbnail || p.thumbnail || '',
           thumbnailBase64: existing?.thumbnailBase64 || p.thumbnailBase64,
           title: cachedMeta?.title || existing?.title || p.title || p.filename,
         };

@@ -6,6 +6,19 @@ interface MediaInfo {
   thumbnail: string;
   qualityLabel: string;
   type: 'video' | 'audio';
+  isPlaylist?: boolean;
+  playlistItems?: PlaylistItem[];
+  playlistCount?: number;
+  playlistWarning?: string;
+}
+
+export interface PlaylistItem {
+  id: string;
+  title: string;
+  duration: string;
+  selected: boolean;
+  available: boolean;
+  videoUrl?: string;
 }
 
 interface UseMediaAnalyzerOptions {
@@ -17,6 +30,9 @@ interface UseMediaAnalyzerReturn {
   isAnalyzing: boolean;
   videoQualities: string[];
   mediaCapabilities: { video: boolean; audio: boolean };
+  togglePlaylistItem: (index: number) => void;
+  selectAllPlaylist: (select: boolean) => void;
+  getSelectedPlaylistItems: () => PlaylistItem[];
 }
 
 export function useMediaAnalyzer(url: string, options?: UseMediaAnalyzerOptions): UseMediaAnalyzerReturn {
@@ -27,6 +43,7 @@ export function useMediaAnalyzer(url: string, options?: UseMediaAnalyzerOptions)
 
   const metadataTitleRef = useRef<string>('');
   const metadataThumbnailRef = useRef<string>('');
+  const playlistItemsRef = useRef<PlaylistItem[]>([]);
 
   useEffect(() => {
     if (!url.startsWith('http')) {
@@ -44,6 +61,51 @@ export function useMediaAnalyzer(url: string, options?: UseMediaAnalyzerOptions)
       setMediaCapabilities({ video: true, audio: true });
 
       try {
+        // Primeiro, detectar se é playlist
+        let isPlaylist = false;
+        let playlistData: PlaylistItem[] = [];
+        let playlistCount = 0;
+        let playlistWarning = '';
+        
+        try {
+          const playlistJson = await invoke<string>('get_playlist_items', { url });
+          if (!isAborted && playlistJson && !playlistJson.includes("não é uma playlist")) {
+            const items = playlistJson.split('|||').filter(i => i);
+            playlistCount = items.length;
+            
+            // Só é playlist se tiver mais de 1 vídeo
+            if (playlistCount > 1) {
+              isPlaylist = true;
+              playlistData = items.map((item, index) => {
+                const parts = item.split('|');
+                const title = parts[0] || '';
+                const duration = parts[1] || '00:00';
+                const status = parts[2] || 'available';
+                const videoId = parts[3] || '';
+                const isAvailable = status === 'available';
+                const videoUrl = videoId ? `https://www.youtube.com/watch?v=${videoId}` : undefined;
+                
+                return {
+                  id: `playlist_${index}`,
+                  title: title || `Video ${index + 1}`,
+                  duration: duration,
+                  selected: isAvailable,
+                  available: isAvailable,
+                  videoUrl
+                };
+              });
+              playlistItemsRef.current = playlistData;
+            }
+          }
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          if (errMsg.includes("unavailable") || errMsg.includes("Video unavailable")) {
+            playlistWarning = 'unavailable';
+          } else {
+            playlistWarning = 'generic';
+          }
+        }
+        
         const metadataJson = await invoke<string>('get_video_metadata', { url });
         if (isAborted) return;
         const meta = JSON.parse(metadataJson);
@@ -69,30 +131,54 @@ export function useMediaAnalyzer(url: string, options?: UseMediaAnalyzerOptions)
         
         let type: 'video' | 'audio' = vOptions.length === 0 ? 'audio' : 'video';
         
+        const availableCount = playlistData.filter(i => i.available).length;
+        
         setAnalyzedMedia({ 
           title: meta.title || '', 
           thumbnail: meta.thumbnail || '', 
           qualityLabel: vOptions.length > 0 ? vOptions[0] : 'AUDIO ONLY', 
-          type 
+          type,
+          isPlaylist: isPlaylist,
+          playlistItems: playlistData,
+          playlistCount,
+          playlistWarning: playlistWarning
         });
         setMediaCapabilities({ video: vOptions.length > 0, audio: true });
         
       } catch (err) {
         console.error('Análise do link falhou:', err);
         const errMsg = err instanceof Error ? err.message : String(err);
-        if (errMsg.toLowerCase().includes('requested format') || errMsg.toLowerCase().includes('format is not available')) {
-          options?.onError?.('Formato não disponível para este conteúdo. Tente outra qualidade.');
-        } else if (errMsg.toLowerCase().includes('youtube') || errMsg.toLowerCase().includes('bot')) {
-          options?.onError?.('YouTube está sendo chato, tente novamente mais tarde!');
-        } else if (errMsg.toLowerCase().includes('sign in to confirm') || errMsg.toLowerCase().includes('cookies')) {
-          options?.onError?.('Login necessário para este conteúdo');
-        } else {
-          options?.onError?.('Erro ao analisar o link');
+        
+        // Se erro contém "INFO - X unavailable", é erro de playlist (não é bloqueio real)
+        // Não mostrar erro, deixar continuar
+        const isPlaylistInfo = errMsg.includes('INFO') && errMsg.includes('unavailable');
+        
+        if (!isPlaylistInfo) {
+          if (errMsg.toLowerCase().includes('requested format') || errMsg.toLowerCase().includes('format is not available')) {
+            options?.onError?.('Formato não disponível para este conteúdo. Tente outra qualidade.');
+          } else if (errMsg.toLowerCase().includes('youtube') || errMsg.toLowerCase().includes('bot')) {
+            options?.onError?.('YouTube está sendo chato, tente novamente mais tarde!');
+          } else if (errMsg.toLowerCase().includes('sign in to confirm') || errMsg.toLowerCase().includes('cookies')) {
+            options?.onError?.('Login necessário para este conteúdo');
+          } else {
+            options?.onError?.('Erro ao analisar o link');
+          }
         }
+        
         if (isAborted) return;
-        setAnalyzedMedia(null);
-        setMediaCapabilities({ video: true, audio: true });
-        setVideoQualities(['BEST QUALITY']);
+        
+        // Se erro contém "INFO - unavailable", criar analyzedMedia com warning
+        // para que o alerta apareça no MediaInput
+        if (isPlaylistInfo) {
+          // Mostrar pop-up de notificação AMARELO (warning) igual ao do YouTube
+          options?.onError?.('Esta playlist contém vídeos removidos. Tente colar o link de um vídeo específico da playlist.');
+          
+          setAnalyzedMedia(null);
+        } else {
+          setAnalyzedMedia(null);
+          setMediaCapabilities({ video: true, audio: true });
+          setVideoQualities(['BEST QUALITY']);
+        }
       } finally {
         if (!isAborted) setIsAnalyzing(false);
       }
@@ -104,10 +190,38 @@ export function useMediaAnalyzer(url: string, options?: UseMediaAnalyzerOptions)
     };
   }, [url]);
 
+  const togglePlaylistItem = (index: number) => {
+    if (!analyzedMedia?.playlistItems) return;
+    const item = analyzedMedia.playlistItems[index];
+    if (!item.available) return;
+    
+    const newItems = [...analyzedMedia.playlistItems];
+    newItems[index] = { ...newItems[index], selected: !newItems[index].selected };
+    playlistItemsRef.current = newItems;
+    setAnalyzedMedia({ ...analyzedMedia, playlistItems: newItems });
+  };
+
+  const selectAllPlaylist = (select: boolean) => {
+    if (!analyzedMedia?.playlistItems) return;
+    const newItems = analyzedMedia.playlistItems.map(item => ({
+      ...item,
+      selected: item.available ? select : item.selected
+    }));
+    playlistItemsRef.current = newItems;
+    setAnalyzedMedia({ ...analyzedMedia, playlistItems: newItems });
+  };
+
+  const getSelectedPlaylistItems = (): PlaylistItem[] => {
+    return playlistItemsRef.current.filter(item => item.selected && item.available);
+  };
+
   return {
     analyzedMedia,
     isAnalyzing,
     videoQualities,
     mediaCapabilities,
+    togglePlaylistItem,
+    selectAllPlaylist,
+    getSelectedPlaylistItems,
   };
 }

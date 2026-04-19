@@ -19,7 +19,7 @@ use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use commands::{
-    cancel_download, check_files_exist, get_file_size, get_video_metadata, list_files_in_folder, load_history,
+    cancel_download, check_files_exist, get_file_size, get_video_metadata, get_playlist_items, list_files_in_folder, load_history,
     move_multiple_to_trash, open_folder_natively, pause_download, read_thumbnail_as_base64, resolve_paths, save_history,
     scan_download_folder, select_download_folder, start_download, find_file_by_title,
 };
@@ -46,6 +46,7 @@ fn main() {
             pause_download,
             select_download_folder,
             get_video_metadata,
+            get_playlist_items,
             open_folder_natively,
             find_file_by_title,
             read_thumbnail_as_base64,

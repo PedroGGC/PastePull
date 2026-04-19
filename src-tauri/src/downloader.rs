@@ -53,6 +53,7 @@ pub fn build_ytdlp_args(
     format_type: Option<String>,
     _title: Option<String>,
     extension: Option<String>,
+    is_playlist: bool,
 ) -> Result<(String, Vec<String>), String> {
     let resource_dir = ytdlp_path.parent().ok_or("Invalid yt-dlp path")?;
     let final_path = if output_dir.is_empty() || output_dir == "default_path" {
@@ -71,7 +72,6 @@ pub fn build_ytdlp_args(
     let mut args: Vec<String> = vec![
         "--ffmpeg-location".to_string(),
         resource_dir.to_string_lossy().to_string(),
-        "--no-playlist".to_string(),
         "--write-thumbnail".to_string(),
         "--convert-thumbnails".to_string(),
         "jpg".to_string(),
@@ -80,6 +80,10 @@ pub fn build_ytdlp_args(
         "--newline".to_string(),
         "--no-colors".to_string(),
     ];
+
+    if !is_playlist {
+        args.push("--no-playlist".to_string());
+    }
 
     let q_str = quality.clone().unwrap_or_else(|| "".to_string());
     let is_audio_only = q_str.ends_with("AUDIO") || format_val == "audio";

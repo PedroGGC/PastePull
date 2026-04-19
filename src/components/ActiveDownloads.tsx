@@ -27,15 +27,15 @@ export function ActiveDownloads({ currentProgress, onCancel }: ActiveDownloadsPr
       {activeDownloads.map((p) => (
         <div key={p.id} className="bg-[#171717] border border-white/5 rounded-2xl p-6 flex items-center gap-6">
           <div className="w-14 h-14 bg-white/5 rounded-lg border border-white/10 flex items-center justify-center shrink-0 overflow-hidden">
-            {p.thumbnail_path ? (
+            {p.thumbnail ? (
+              <img src={p.thumbnail} alt="thumb" className="w-full h-full object-cover" />
+            ) : p.thumbnail_path ? (
               <img 
                 src={convertFileSrc(p.thumbnail_path)} 
                 alt="thumb" 
                 className="w-full h-full object-cover" 
                 onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} 
               />
-            ) : p.thumbnail ? (
-              <img src={p.thumbnail} alt="thumb" className="w-full h-full object-cover" />
             ) : (
               <Play size={20} className="text-white/30" />
             )}

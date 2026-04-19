@@ -26,8 +26,32 @@ export function useDownloadHistory() {
 
   const loadHistory = useCallback(async () => {
     try {
-      const items = await invoke<DownloadHistoryItem[]>('load_history');
-      setDownloadItems(items);
+      let items = await invoke<DownloadHistoryItem[]>('load_history');
+      
+      // QoL 1: Verificar se arquivos ainda existem no disco
+      const verifiedItems: DownloadHistoryItem[] = [];
+      for (const item of items) {
+        if (item.filepath && item.status === 'active') {
+          const exists = await invoke<boolean>('check_file_exists', { filepath: item.filepath });
+          if (!exists) {
+            verifiedItems.push({ ...item, status: 'deleted' as const });
+          } else {
+            verifiedItems.push(item);
+          }
+        } else {
+          verifiedItems.push(item);
+        }
+      }
+      
+      // Se algum status mudou, salvar
+      const hasChanges = verifiedItems.some((item, idx) => item.status !== items[idx]?.status);
+      if (hasChanges) {
+        items = verifiedItems;
+        setDownloadItems(items);
+        saveHistoryToBackend(items);
+      } else {
+        setDownloadItems(items);
+      }
       
       const savedPath = localStorage.getItem('ud_download_path');
       if (savedPath) {
