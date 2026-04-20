@@ -4,6 +4,10 @@ import { DownloadProgress, DownloadHistoryItem, Settings } from '../types';
 import { safeBtoa } from '../utils/helpers';
 import { t } from '../utils/i18n';
 
+// Track URLs that are currently being dispatched to the backend (to prevent rapid-click race conditions)
+const inFlightUrls = new Set<string>();
+export const clearInFlightUrls = () => inFlightUrls.clear();
+
 interface DownloadConfig {
   url: string;
   downloadPath: string;
@@ -55,25 +59,49 @@ export async function startDownload({
 
   if (!url) return;
 
-  const existingInDownloads = downloadItems.find(item => 
-    item.status === 'active' && 
-    item.url === url && 
-    item.ext?.toUpperCase() === selectedExtension.toUpperCase()
+// 1. FIRST: Check if is currently downloading (in currentProgress)
+  const isInProgress = currentProgress && Object.values(currentProgress).some(p => 
+    p.url === url && 
+    p.status !== 'completed' && 
+    p.extension?.toLowerCase() === selectedExtension.toLowerCase()
   );
   
-  if (existingInDownloads) {
+  if (isInProgress) {
+    onNotification('warning', t('This media is already downloading!', 'Essa mídia já está sendo baixada!'), 10000);
+    return;
+  }
+  
+  // 2. SECOND: Check if already downloaded (only if NOT in progress)
+  const alreadyDownloaded = downloadItems.find(item => 
+    item.url === url &&
+    item.ext?.toLowerCase() === selectedExtension.toLowerCase() &&
+    item.status === 'active'
+  );
+  
+  if (alreadyDownloaded) {
     onNotification('warning', t('Already downloaded!', 'Já foi baixado!'), 10000);
     return;
   }
-
-  const activeCount = (currentProgress ? Object.values(currentProgress) : []).filter((p: DownloadProgress) => 
-    !['completed', 'error', 'skipped', 'converting'].includes(p.status)
-  ).length;
-
-  if (activeCount >= settings.maxDownloads) {
-    onNotification('warning', t('Maximum simultaneous downloads reached!', 'Máximo de downloads simultâneos atingido!'), 10000);
+  
+  // Check if in inFlightUrls (fallback for race conditions)
+  const isInFlight = inFlightUrls.has(url);
+  
+  if (isInFlight) {
+    onNotification('warning', t('This media is already downloading!', 'Essa mídia já está sendo baixada!'), 10000);
     return;
   }
+
+  // Calculate real active count (including those currently in the React state queue that haven't triggered a change)
+  const activeCount = (currentProgress ? Object.values(currentProgress) : []).filter((p: DownloadProgress) => 
+    !['completed', 'error', 'skipped', 'converting'].includes(p.status)
+  ).length + inFlightUrls.size;
+
+  if (activeCount >= settings.maxDownloads) {
+    onNotification('warning', t('Maximum simultaneous downloads reached! The request was ignored.', 'Máximo de downloads simultâneos atingido! O pedido foi ignorado.'), 10000);
+    return;
+  }
+
+  inFlightUrls.add(url);
 
   const titleToUse = analyzedMedia?.qualityLabel?.startsWith('AUDIO') 
     ? (metadataTitle || t('Audio', 'Áudio')) 
@@ -151,5 +179,7 @@ export async function startDownload({
         console.error('Desktop notification failed', err); 
       }
     }
+  } finally {
+    inFlightUrls.delete(url);
   }
 }
