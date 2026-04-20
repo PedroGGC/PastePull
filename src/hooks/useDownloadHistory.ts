@@ -32,10 +32,16 @@ export function useDownloadHistory() {
       const verifiedItems: DownloadHistoryItem[] = [];
       for (const item of items) {
         if (item.filepath && item.status === 'active') {
-          const exists = await invoke<boolean>('check_file_exists', { filepath: item.filepath });
-          if (!exists) {
-            verifiedItems.push({ ...item, status: 'deleted' as const });
-          } else {
+          try {
+            const exists = await invoke<boolean>('check_file_exists', { filepath: item.filepath });
+            // console.log(`[DEBUG] Checking file exists: ${item.filepath} - result: ${exists}`);
+            if (!exists) {
+              verifiedItems.push({ ...item, status: 'deleted' as const });
+            } else {
+              verifiedItems.push(item);
+            }
+          } catch (e) {
+            console.warn('[History] check_file_exists failed for', item.filepath, e);
             verifiedItems.push(item);
           }
         } else {
@@ -132,6 +138,7 @@ export function useDownloadHistory() {
   }, []);
 
   const markAsDeleted = useCallback((filepath: string) => {
+    // console.log(`[DEBUG] markAsDeleted called for: ${filepath}`);
     if (processingDeleteRef.current.has(filepath)) {
       return;
     }
