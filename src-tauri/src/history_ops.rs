@@ -6,6 +6,11 @@ use crate::types::HistoryEntry;
 const MAX_HISTORY_ITEMS: usize = 1000;
 
 pub fn save_history(app: AppHandle, mut items: Vec<HistoryEntry>) -> Result<(), String> {
+    // for item in &items {
+    //     tracing::info!("[DEBUG] Saving history - type: {} | has_thumbnail: {}", 
+    //         item.file_type, item.thumbnail_data_url.is_some());
+    // }
+
     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let history_dir = app_data.join("persistence");
     if !history_dir.exists() {

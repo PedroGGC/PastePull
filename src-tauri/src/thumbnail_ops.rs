@@ -3,6 +3,10 @@ use crate::utils::ascii_alphanum;
 
 pub fn read_thumbnail_as_base64(path: String) -> Result<String, String> {
     let file_path = PathBuf::from(&path);
+    // let expected_thumb = file_path.with_extension("jpg");
+    // tracing::info!("[DEBUG] LOADING THUMBNAIL - filepath: {} | expected_thumb: {} | exists: {}", 
+    //    path, expected_thumb.display(), expected_thumb.exists());
+
 
     if file_path.exists() {
         let data = std::fs::read(&path).map_err(|e| e.to_string())?;

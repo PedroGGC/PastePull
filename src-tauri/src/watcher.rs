@@ -91,6 +91,7 @@ pub fn start_file_watcher(app: AppHandle, path: String) -> Result<(), String> {
                         EventKind::Remove(_) => {
                             for path in event.paths {
                                 let path_str = path.to_string_lossy().to_string();
+                                // tracing::info!("[DEBUG] File event: {} - action: deleted", path_str);
                                 if known_files.remove(&path_str) {
                                     let event_msg = FileChangeEvent {
                                         filepath: path_str,
