@@ -12,7 +12,7 @@ import { useMediaAnalyzer } from './hooks/useMediaAnalyzer';
 import { useDownloadProgress } from './hooks/useDownloadProgress';
 import { useNotifications } from './hooks/useNotifications';
 import { useDownloadHistory } from './hooks/useDownloadHistory';
-import { startDownload } from './utils/downloadHandler';
+import { startDownload, clearInFlightUrls } from './utils/downloadHandler';
 import { DownloadProgress, DownloadHistoryItem, Settings as SettingsType } from './types';
 import { t } from './utils/i18n';
 import { safeBtoa, normalizeFilepath } from './utils/helpers';
@@ -68,6 +68,7 @@ export default function App() {
     onError: (message) => showNotification('warning', message, 10000)
   });
 
+  useEffect(() => { clearInFlightUrls(); }, []); // Limpa rastreador de URLs ao iniciar
   useEffect(() => { setSelectedItems([]); }, [showArchive]);
   useEffect(() => { localStorage.setItem('ud_download_path', downloadPath); }, [downloadPath]);
   useEffect(() => { settingsRef.current = settings; localStorage.setItem('ud_settings', JSON.stringify(settings)); }, [settings]);
@@ -175,10 +176,25 @@ export default function App() {
     
     // Se é playlist e tem itens selecionados, baixar apenas os selecionados
     if (analyzedMedia?.isPlaylist && selectedPlaylistItems.length > 0) {
-      const total = selectedPlaylistItems.length;
+      const activeCount = (Object.values(currentProgress) as DownloadProgress[]).filter((p) => 
+        !['completed', 'error', 'skipped', 'converting'].includes(p.status)
+      ).length;
+      
+      const availableSlots = settings.maxDownloads - activeCount;
+      if (availableSlots <= 0) {
+        showNotification('warning', t('Maximum simultaneous downloads reached!', 'Máximo de downloads simultâneos atingido!'), 10000);
+        return;
+      }
+      
+      const toDownload = selectedPlaylistItems.slice(0, availableSlots);
+      if (selectedPlaylistItems.length > availableSlots) {
+        showNotification('warning', t(`Only ${availableSlots} items will be downloaded due to limit.`, `Apenas ${availableSlots} itens serão iniciados devido ao limite.`), 10000);
+      }
+
+      const total = toDownload.length;
       let completed = 0;
       
-      for (const item of selectedPlaylistItems) {
+      for (const item of toDownload) {
         completed++;
         const videoUrl = item.videoUrl || url;
         await startDownload({
@@ -357,7 +373,7 @@ export default function App() {
         <CancelModal cancelingId={cancelingId} onClose={() => setCancelingId(null)} onConfirm={handleCancelDownload} />
         <DeleteModal modal={deleteModal} isDeleting={isDeleting} onClose={() => setDeleteModal(null)} onConfirmMoveToTrash={handleMoveToTrashClick} onConfirmRemoveFromHistory={handleDeleteFromHistory} />
 
-        <div className={`flex-1 p-8 pt-12 ${currentScreen === 'search' || currentScreen === 'settings' ? 'overflow-y-auto' : ''}`}>
+        <div className="flex-1 p-8 pt-12 overflow-y-auto">
           <div className="max-w-3xl mx-auto space-y-12">
             {currentScreen === 'search' && (
               <>

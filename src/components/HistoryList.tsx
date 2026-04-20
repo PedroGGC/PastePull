@@ -1,6 +1,5 @@
 import { useMemo, useRef } from 'react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
-import { useVirtualizer } from '@tanstack/react-virtual';
 import { Film, Music, FileDown, FolderOpen, Clock, HardDrive, Video, Search, Trash2, CheckSquare, Square } from 'lucide-react';
 import { DownloadHistoryItem } from '../types';
 import { formatRelativeTime, inferFileType } from '../utils/formatters';
@@ -46,13 +45,6 @@ export function HistoryList({
       .sort((a, b) => sortOrder === 'oldest' ? a.completedAt - b.completedAt : b.completedAt - a.completedAt);
   }, [items, searchQuery, sortOrder]);
 
-  const rowVirtualizer = useVirtualizer({
-    count: filteredItems.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 140,
-    overscan: 5,
-  });
-
   const renderThumbnail = (item: DownloadHistoryItem) => {
     let imgSrc = '';
     
@@ -94,30 +86,10 @@ export function HistoryList({
           </p>
         </div>
       ) : (
-        <div ref={parentRef} className="max-h-[65vh] overflow-y-auto overflow-x-hidden pr-2 scrollbar-thin">
-          <div
-            style={{
-              height: `${rowVirtualizer.getTotalSize()}px`,
-              width: '100%',
-              position: 'relative',
-            }}
-          >
-            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-              const item = filteredItems[virtualRow.index];
-              return (
-              <div 
-                key={item.filepath || item.id} 
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: '100%',
-                  height: `${virtualRow.size}px`,
-                  transform: `translateY(${virtualRow.start}px)`,
-                }}
-                className="pb-3"
-              >
+        <div ref={parentRef} className="flex-1 overflow-y-auto overflow-x-hidden pr-2 scrollbar-thin space-y-3 pb-6">
+            {filteredItems.map((item) => (
                 <div 
+                  key={item.filepath || item.id}
                   className={`group flex flex-col sm:flex-row items-center gap-4 p-4 min-h-36 bg-[#1a1a1a] border border-white/5 rounded-2xl hover:bg-[#1e1e1e] transition-colors ${selectionMode ? 'cursor-default' : ''}`}
                   onClick={() => !selectionMode && onItemClick(item)}
                 >
@@ -212,10 +184,7 @@ export function HistoryList({
                 </button>
               </div>
                 </div>
-              </div>
-              );
-            })}
-          </div>
+            ))}
         </div>
       )}
     </div>
