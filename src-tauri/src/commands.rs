@@ -1,17 +1,17 @@
+use once_cell::sync::Lazy;
+use regex::Regex;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
-use once_cell::sync::Lazy;
-use regex::Regex;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
 use crate::downloader::{build_ytdlp_args, spawn_download_thread};
 use crate::process::{kill_process_tree, resume_process, suspend_process};
-use crate::types::{DownloadProgress, DownloadHandle, HistoryEntry, SharedDownloadState};
+use crate::types::{DownloadHandle, DownloadProgress, HistoryEntry, SharedDownloadState};
 use crate::utils::normalize_title;
 use tauri_plugin_dialog::DialogExt;
 
@@ -46,10 +46,22 @@ pub async fn start_download(
     let ytdlp_path = resource_dir.join("essentials").join("yt-dlp.exe");
 
     if !ytdlp_path.exists() {
-        return Err(format!("yt-dlp.exe não encontrado: {}", ytdlp_path.display()));
+        return Err(format!(
+            "yt-dlp.exe não encontrado: {}",
+            ytdlp_path.display()
+        ));
     }
 
-    let (_, args) = build_ytdlp_args(&ytdlp_path, &url, &output_dir, quality.clone(), format_type.clone(), title.clone(), extension.clone(), is_playlist.unwrap_or(false))?;
+    let (_, args) = build_ytdlp_args(
+        &ytdlp_path,
+        &url,
+        &output_dir,
+        quality.clone(),
+        format_type.clone(),
+        title.clone(),
+        extension.clone(),
+        is_playlist.unwrap_or(false),
+    )?;
 
     let tmp_dir = std::env::temp_dir();
     let stdout_path = tmp_dir.join(format!("ytdlp_stdout_{}.log", task_id));
@@ -77,7 +89,10 @@ pub async fn start_download(
     let quality_c = quality.clone().unwrap_or_default();
     let format_c = format_type.clone().unwrap_or_else(|| "video".to_string());
     let extension_c = extension.clone().unwrap_or_default();
-    let is_audio = format_c == "audio" || ["MP3", "M4A", "OGG", "FLAC", "WAV"].iter().any(|&e| extension_c.to_uppercase() == e);
+    let is_audio = format_c == "audio"
+        || ["MP3", "M4A", "OGG", "FLAC", "WAV"]
+            .iter()
+            .any(|&e| extension_c.to_uppercase() == e);
 
     {
         let mut s = state.lock().unwrap();
@@ -198,7 +213,11 @@ pub async fn cancel_download(
                         continue;
                     }
 
-                    let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    let filename = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
                     let normalized_filename = normalize_title(&filename);
 
                     let is_related = normalized_filename.starts_with(&normalized_stem);
@@ -302,11 +321,9 @@ pub async fn select_download_folder(app: AppHandle) -> Result<String, String> {
             let _ = tx.send(folder);
         });
 
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        rx.recv()
-    })
-    .await
-    .map_err(|e| e.to_string())?;
+    let result = tauri::async_runtime::spawn_blocking(move || rx.recv())
+        .await
+        .map_err(|e| e.to_string())?;
 
     match result {
         Ok(Some(path)) => Ok(path.to_string()),
@@ -386,51 +403,73 @@ pub async fn get_playlist_items(app: AppHandle, url: String) -> Result<String, S
         Ok(Ok(output)) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            
+
             // Verificar se tem dados no stdout, independente do stderr
             if stdout.trim().is_empty() {
                 // Se não conseguiu extrair nada, verificar o tipo de erro
-                if stderr.contains("Unable to extract") || stderr.contains("No playlist") || stderr.contains("No entries") {
+                if stderr.contains("Unable to extract")
+                    || stderr.contains("No playlist")
+                    || stderr.contains("No entries")
+                {
                     return Err("Não é uma playlist".to_string());
                 }
                 return Err("Nenhum vídeo encontrado".to_string());
             }
-            
+
             // Processar stdout mesmo se houver erros no stderr
             let mut items: Vec<String> = Vec::new();
             for line in stdout.lines() {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(line) {
-                    let title = json.get("title").and_then(|v| v.as_str()).unwrap_or("[untitled]");
+                    let title = json
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("[untitled]");
                     let video_id = json.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                    let availability = json.get("availability").and_then(|v| v.as_str()).unwrap_or("public");
+                    let availability = json
+                        .get("availability")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("public");
                     let duration = json.get("duration").and_then(|v| v.as_i64());
-                    
-                    let is_unavailable = availability == "private" 
-                        || availability == "unlisted" 
-                        || json.get("is_unavailable").and_then(|v| v.as_bool()).unwrap_or(false)
-                        || json.get("was_live").and_then(|v| v.as_bool()).unwrap_or(false)
+
+                    let is_unavailable = availability == "private"
+                        || availability == "unlisted"
+                        || json
+                            .get("is_unavailable")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                        || json
+                            .get("was_live")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
                         || title.contains("[Deleted video]")
                         || title.contains("[Removed video]")
                         || title.contains("[Private video]");
-                    
-                    let status = if is_unavailable { "unavailable" } else { "available" };
-                    
+
+                    let status = if is_unavailable {
+                        "unavailable"
+                    } else {
+                        "available"
+                    };
+
                     if let Some(sec) = duration {
                         let minutes = sec / 60;
                         let seconds = sec % 60;
-                        items.push(format!("{}|{:02}:{:02}|{}|{}", title, minutes, seconds, status, video_id));
+                        items.push(format!(
+                            "{}|{:02}:{:02}|{}|{}",
+                            title, minutes, seconds, status, video_id
+                        ));
                     } else {
                         items.push(format!("{}|00:00|{}|{}", title, status, video_id));
                     }
                 }
             }
-            
+
             if items.is_empty() {
                 Err("Nenhum vídeo encontrado".to_string())
             } else {
                 Ok(items.join("|||"))
             }
-        },
+        }
         Ok(Err(e)) => Err(e.to_string()),
         Err(_) => Err("Timeout ao obter playlist (60s)".to_string()),
     }
@@ -479,7 +518,7 @@ pub fn list_files_in_folder(folder_path: String) -> Result<Vec<String>, String> 
     if !path.exists() {
         return Err("Folder does not exist".to_string());
     }
-    
+
     let mut files = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&path) {
         for entry in entries.flatten() {
@@ -491,7 +530,7 @@ pub fn list_files_in_folder(folder_path: String) -> Result<Vec<String>, String> 
             }
         }
     }
-    
+
     Ok(files)
 }
 
@@ -510,22 +549,64 @@ pub fn load_history(app: AppHandle) -> Result<Vec<HistoryEntry>, String> {
 #[tauri::command]
 pub async fn move_multiple_to_trash(paths: Vec<String>) -> Result<(), String> {
     info!("Moving {} file(s) to trash", paths.len());
-    
+
     #[cfg(target_os = "windows")]
     {
         // Coletar stems e paths no contexto sync (CPU-bound, sem I/O bloqueante)
-        let mut stems_to_delete: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut stems_to_delete: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         let mut escaped_paths: Vec<String> = Vec::new();
-        
+
         for filepath in &paths {
-            let path = PathBuf::from(filepath);    
+            let path = PathBuf::from(filepath);
             if let Some(stem) = path.file_stem() {
                 let stem_str = stem.to_string_lossy().to_lowercase();
                 *stems_to_delete.entry(stem_str).or_insert(0) += 1;
             }
             escaped_paths.push(filepath.replace("'", "''"));
         }
-        
+
+        // CONTAR ANTES: registrar quantos arquivos de mídia existem por stem, ANTES de deletar
+        let image_exts = ["jpg", "jpeg", "png", "webp", "gif", "bmp"];
+        let mut pre_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+
+        for filepath in &paths {
+            let path = PathBuf::from(filepath);
+            if let (Some(parent), Some(stem)) = (path.parent(), path.file_stem()) {
+                let stem_lower = stem.to_string_lossy().to_lowercase();
+                // Só contar uma vez por stem/diretório
+                if pre_counts.contains_key(&stem_lower) {
+                    continue;
+                }
+
+                let mut total = 0usize;
+                if let Ok(entries) = std::fs::read_dir(parent) {
+                    for entry in entries.flatten() {
+                        let ep = entry.path();
+                        if !ep.is_file() {
+                            continue;
+                        }
+                        if let Some(ext) = ep.extension() {
+                            if image_exts.contains(&ext.to_string_lossy().to_lowercase().as_str()) {
+                                continue; // pula thumbnails
+                            }
+                        }
+                        if let Some(es) = ep.file_stem() {
+                            if es.to_string_lossy().to_lowercase() == stem_lower {
+                                total += 1;
+                            }
+                        }
+                    }
+                }
+                info!(
+                    "Pre-delete count for stem '{}': {} file(s)",
+                    stem_lower, total
+                );
+                pre_counts.insert(stem_lower, total);
+            }
+        }
+
         // Fix 4: lançar o PowerShell em spawn_blocking (não bloqueia o runtime async)
         if !escaped_paths.is_empty() {
             let files_array = escaped_paths.join("','");
@@ -542,62 +623,49 @@ pub async fn move_multiple_to_trash(paths: Vec<String>) -> Result<(), String> {
                 // Aguarda o PowerShell concluir (garante que os arquivos foram movidos)
                 let _ = cmd.spawn().and_then(|mut child| child.wait());
                 info!("Moved {} file(s) to trash", file_count);
-            }).await.map_err(|e| e.to_string())?;
+            })
+            .await
+            .map_err(|e| e.to_string())?;
         }
-        
+
         // Fix 4: sleep não-bloqueante — não trava a fila de comandos do Tauri
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         info!("Finished waiting for file deletions");
-        
-        // Checar e deletar thumbnails órfãos
+
+        // Checar e deletar thumbnails órfãos usando contagem PRÉ-deleção
         let mut thumbnails_to_check: Vec<(PathBuf, String)> = Vec::new();
-        
+
         for filepath in &paths {
             let path = PathBuf::from(filepath);
             if let Some(parent) = path.parent() {
                 if let Some(stem) = path.file_stem() {
-                    thumbnails_to_check.push((parent.to_path_buf(), stem.to_string_lossy().to_string()));
+                    thumbnails_to_check
+                        .push((parent.to_path_buf(), stem.to_string_lossy().to_string()));
                 }
             }
         }
-        
+
         for (parent, stem) in thumbnails_to_check {
             let stem_lower = stem.to_lowercase();
             let count_being_deleted = stems_to_delete.get(&stem_lower).copied().unwrap_or(0);
-            
-            info!("Checking thumbnail for stem: {} (deleting {} files with this stem)", stem, count_being_deleted);
-            
-            let image_exts = ["jpg", "jpeg", "png", "webp", "gif", "bmp"];
-            
+            // Usar contagem ANTES da deleção (não depois!)
+            let total_in_folder = pre_counts.get(&stem_lower).copied().unwrap_or(0);
+
+            info!(
+                "Thumbnail check - stem: '{}', pre-delete total: {}, being deleted: {}",
+                stem_lower, total_in_folder, count_being_deleted
+            );
+
+            let remaining = total_in_folder.saturating_sub(count_being_deleted);
+
             for ext in &image_exts {
                 let thumb_filename = format!("{}.{}", stem, ext);
                 let thumb_path = parent.join(&thumb_filename);
-                
+
                 if thumb_path.exists() {
                     info!("Thumbnail exists: {:?}", thumb_path);
-                    
-                    let mut total_in_folder = 0usize;
-                    if let Ok(entries) = std::fs::read_dir(&parent) {
-                        for entry in entries.flatten() {
-                            let entry_path = entry.path();
-                            if let Some(ext) = entry_path.extension() {
-                                let ext_str = ext.to_string_lossy().to_lowercase();
-                                if image_exts.contains(&ext_str.as_str()) {
-                                    continue;
-                                }
-                            }
-                            if let Some(entry_stem) = entry_path.file_stem() {
-                                let entry_stem_str = entry_stem.to_string_lossy().to_lowercase();
-                                if entry_stem_str == stem_lower {
-                                    total_in_folder += 1;
-                                }
-                            }
-                        }
-                    }
-                    
-                    info!("Total media files with stem '{}' in folder: {}", stem_lower, total_in_folder);
-                    
-                    let remaining = total_in_folder.saturating_sub(count_being_deleted);
+                    info!("remaining media after deletion: {}", remaining);
+
                     if remaining == 0 {
                         let thumb_str = thumb_path.to_string_lossy().to_string();
                         let thumb_ps_command = format!(
@@ -607,15 +675,25 @@ pub async fn move_multiple_to_trash(paths: Vec<String>) -> Result<(), String> {
                         let thumb_str_log = thumb_str.clone();
                         tauri::async_runtime::spawn_blocking(move || {
                             let mut thumb_cmd = std::process::Command::new("powershell.exe");
-                            thumb_cmd.args(["-WindowStyle", "Hidden", "-Command", &thumb_ps_command]);
+                            thumb_cmd.args([
+                                "-WindowStyle",
+                                "Hidden",
+                                "-Command",
+                                &thumb_ps_command,
+                            ]);
                             #[cfg(target_os = "windows")]
                             thumb_cmd.creation_flags(0x08000000);
                             let _ = thumb_cmd.spawn().and_then(|mut c| c.wait());
                             info!("Thumbnail moved to trash: {}", thumb_str_log);
-                        }).await.map_err(|e| e.to_string())?;
+                        })
+                        .await
+                        .map_err(|e| e.to_string())?;
                         break;
                     } else {
-                        info!("Not deleting thumbnail - {} media file(s) with same stem remain after deletion", remaining);
+                        info!(
+                            "Kept thumbnail - {} media file(s) with same stem remain",
+                            remaining
+                        );
                     }
                     break;
                 }

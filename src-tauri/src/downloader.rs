@@ -535,7 +535,15 @@ pub fn spawn_download_thread(
                 }
             }
 
+// Verificar SE o yt-dlp completou ANTES de usar o valor
+            let is_completed = last_progress.status == "completed";
+            
             let _ = app_clone.emit("download-progress", last_progress);
+            
+            // LOG: Se o yt-dlp completou, aceitar como sucesso
+if is_completed {
+                info!("[DEBUG] Accepted - yt-dlp completed successfully");
+            }
         }
 
         {
